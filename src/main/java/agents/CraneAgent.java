@@ -48,30 +48,32 @@ public class CraneAgent extends Agent {
         System.out.println("Crane Agent shutting down.");
     }
 
-    // --- Temporary Test Behavior ---
+
     // --- Temporary Test Behavior ---
     private class TestMovementBehaviour extends OneShotBehaviour {
         @Override
         public void action() {
             try {
-                // Let's assume Register 0 is the X-axis for this test, and we want to move it to position 3.
-                int xAxisRegister = 0;
-                int targetPosition = 3;
+                // Modbus wire protocol is often 0-based. If the doc says [1], the wire address is 0.
+                int xAxisRegister = 1;
+                int targetPosition = 450;
 
                 WriteSingleRegisterRequest request = new WriteSingleRegisterRequest(
                         xAxisRegister,
                         new SimpleRegister(targetPosition)
                 );
 
-                // NEW LOGIC: Use ModbusTCPTransaction instead of writing to transport directly
+                // THE FIX: Explicitly set the Unit ID to 1 so the server doesn't reject it as a broadcast
+                request.setUnitID(1);
+
                 ModbusTCPTransaction transaction = new ModbusTCPTransaction(modbusConnection);
                 transaction.setRequest(request);
-                transaction.execute(); // This sends the message and waits for the reply
+                transaction.execute();
 
                 ModbusResponse response = transaction.getResponse();
 
                 if (response != null) {
-                    System.out.println("Test movement command sent. Target X: " + targetPosition);
+                    System.out.println("Success! Crane commanded to move to Process1 (X: " + targetPosition + ")");
                 }
 
             } catch (Exception e) {
