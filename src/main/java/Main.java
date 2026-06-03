@@ -18,11 +18,8 @@ public class Main {
         AgentContainer mainContainer = rt.createMainContainer(profile);
 
         try {
-            // 4. Start the RMA (Management GUI)
-            AgentController rma = mainContainer.createNewAgent("rma", "jade.tools.rma.rma", new Object[0]);
-            rma.start();
 
-            // 5. Deploy the Crane Agent
+            // 4. Deploy the Crane Agent
             AgentController craneAgent = mainContainer.createNewAgent("Crane", "agents.CraneAgent", new Object[0]);
             craneAgent.start();
 
