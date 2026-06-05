@@ -23,10 +23,16 @@ public class Main {
             AgentController craneAgent = mainContainer.createNewAgent("Crane", "agents.CraneAgent", new Object[0]);
             craneAgent.start();
 
-            // Deploy the two Sources
-            AgentController source1 = mainContainer.createNewAgent("Source1", "agents.SourceAgent", new Object[0]);
+            // Deploy the two Sources - manually
+//            AgentController source1 = mainContainer.createNewAgent("Source1", "agents.SourceAgent", new Object[0]);
+//            source1.start();
+//            AgentController source2 = mainContainer.createNewAgent("Source2", "agents.SourceAgent", new Object[0]);
+//            source2.start();
+
+            // LLM entered the chat
+            AgentController source1 = mainContainer.createNewAgent("Source1", "agents.SourceAgent", new Object[]{"source_station_1", "8001"});
             source1.start();
-            AgentController source2 = mainContainer.createNewAgent("Source2", "agents.SourceAgent", new Object[0]);
+            AgentController source2 = mainContainer.createNewAgent("Source2", "agents.SourceAgent", new Object[]{"source_station_2", "8002"});
             source2.start();
 
             // Deploy the two Processes with specific service names
