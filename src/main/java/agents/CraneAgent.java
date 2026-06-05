@@ -22,6 +22,7 @@ import java.net.InetAddress;
 public class CraneAgent extends Agent {
 
     private TCPMasterConnection modbusConnection;
+    private int currentCraneX = 0; // Track the crane positions
 
     @Override
     protected void setup() {
@@ -136,17 +137,15 @@ public class CraneAgent extends Agent {
         transaction.execute();
     }
 
-    // --- NEW FULL PHYSICAL MACRO BEHAVIOUR ---
+// --- NEW DYNAMIC PHYSICAL MACRO BEHAVIOUR ---
     private class CranePickAndPlaceBehaviour extends jade.core.behaviours.OneShotBehaviour {
         private ACLMessage replyMessage;
         private int pickupX, dropoffX;
-
-        // THE FIX: Lock in the agent reference so JADE's garbage collector doesn't clear it
         private Agent agentRef;
 
         public CranePickAndPlaceBehaviour(Agent a, ACLMessage reply, int pickupX, int dropoffX) {
             super(a);
-            this.agentRef = a; // Save it permanently!
+            this.agentRef = a;
             this.replyMessage = reply;
             this.pickupX = pickupX;
             this.dropoffX = dropoffX;
@@ -158,35 +157,44 @@ public class CraneAgent extends Agent {
                 try {
                     System.out.println(getLocalName() + ": Raising to safe travel height.");
                     writeModbus(2, 200);
-                    Thread.sleep(1000);
+                    Thread.sleep(1500);
 
-                    System.out.println(getLocalName() + ": Moving to pickup X:" + pickupX);
+                    // --- DYNAMIC DISTANCE CALCULATION (PICKUP) ---
+                    int distToPickup = Math.abs(pickupX - currentCraneX);
+                    long sleepToPickup = (distToPickup * 10) + 1500; // 10ms per pixel + 1.5s buffer
+
+                    System.out.println(getLocalName() + ": Moving to pickup X:" + pickupX + " (Waiting " + sleepToPickup + "ms)");
                     writeModbus(1, pickupX);
-                    Thread.sleep(2000);
+                    Thread.sleep(sleepToPickup);
+                    currentCraneX = pickupX; // Update tracker
 
                     writeModbus(2, 82);
-                    Thread.sleep(1000);
+                    Thread.sleep(1500); // Give it plenty of time to lower
 
                     writeModbus(3, 1);
-                    Thread.sleep(500);
+                    Thread.sleep(500); // Grip
 
                     writeModbus(2, 200);
-                    Thread.sleep(1000);
+                    Thread.sleep(1500); // Raise
 
-                    System.out.println(getLocalName() + ": Part secured. Moving to dropoff X:" + dropoffX);
+                    // --- DYNAMIC DISTANCE CALCULATION (DROPOFF) ---
+                    int distToDropoff = Math.abs(dropoffX - currentCraneX);
+                    long sleepToDropoff = (distToDropoff * 10) + 1500;
+
+                    System.out.println(getLocalName() + ": Part secured. Moving to dropoff X:" + dropoffX + " (Waiting " + sleepToDropoff + "ms)");
                     writeModbus(1, dropoffX);
-                    Thread.sleep(2500);
+                    Thread.sleep(sleepToDropoff);
+                    currentCraneX = dropoffX; // Update tracker
 
                     writeModbus(2, 82);
-                    Thread.sleep(1000);
+                    Thread.sleep(1500);
 
                     writeModbus(3, 0);
-                    Thread.sleep(500);
+                    Thread.sleep(500); // Release
 
                     writeModbus(2, 200);
-                    Thread.sleep(1000);
+                    Thread.sleep(1500);
 
-                    // Use our explicitly saved reference instead of JADE's internal 'myAgent'
                     agentRef.send(replyMessage);
                 } catch (Exception e) {
                     System.err.println("Crane macro failed.");
@@ -194,5 +202,4 @@ public class CraneAgent extends Agent {
                 }
             }).start();
         }
-    }
-}
+    }}

@@ -36,9 +36,9 @@ public class ProcessAgent extends Agent {
         // Map the correct Modbus wire address based on the agent's identity
         // Address 4 -> Wire 3. Address 5 -> Wire 4.
         if (serviceType.equals("processing_station_1")) {
-            startRegister = 3;
-        } else if (serviceType.equals("processing_station_2")) {
             startRegister = 4;
+        } else if (serviceType.equals("processing_station_2")) {
+            startRegister = 5;
         }
 
         System.out.println("Process Agent " + getLocalName() + " starting up. Target Register: " + startRegister);
