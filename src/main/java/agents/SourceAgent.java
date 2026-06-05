@@ -1,55 +1,106 @@
 package agents;
 
 import jade.core.Agent;
+import jade.wrapper.AgentController;
+import jade.wrapper.ContainerController;
 import jade.domain.DFService;
 import jade.domain.FIPAAgentManagement.DFAgentDescription;
 import jade.domain.FIPAAgentManagement.ServiceDescription;
 import jade.domain.FIPAException;
 
+import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpExchange;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+
 public class SourceAgent extends Agent {
+
+    private HttpServer server;
+    private String sourceName;
+    private int partCounter = 1; // Keeps track of part IDs
 
     @Override
     protected void setup() {
+        Object[] args = getArguments();
+        sourceName = (args != null && args.length > 0) ? (String) args[0] : "source_station_1";
+
+        // Use the second argument as the port number, default to 8001 if missing
+        int port = (args != null && args.length > 1) ? Integer.parseInt((String) args[1]) : 8001;
+
         System.out.println("Source Agent " + getLocalName() + " is ready.");
 
-        // --- DF REGISTRATION (The "Yellow Pages") ---
-        // 1. Create the main description for this specific agent instance
+        // --- 1. DF REGISTRATION ---
         DFAgentDescription dfd = new DFAgentDescription();
-        dfd.setName(getAID()); // Associate the description with this agent's unique ID
-
-        // 2. Define the specific service this agent provides
+        dfd.setName(getAID());
         ServiceDescription sd = new ServiceDescription();
-        sd.setType("source_station"); // The generic category other agents will search for
-        sd.setName(getLocalName() + "_service"); // A unique name for this specific instance's service
-        dfd.addServices(sd); // Attach the service to the agent's description
+        sd.setType(sourceName);
+        sd.setName(getLocalName() + "_service");
+        dfd.addServices(sd);
 
-        // 3. Publish the description to the Directory Facilitator
+        try { DFService.register(this, dfd); } catch (FIPAException fe) { fe.printStackTrace(); }
+
+        // --- 2. HTTP SERVER LISTENER ---
         try {
-            // DFService is a static utility class provided by JADE to interact with the DF agent
-            DFService.register(this, dfd);
-            System.out.println(getLocalName() + " registered successfully with the DF.");
-        } catch (FIPAException fe) {
-            // FIPAExceptions occur if the DF is unreachable or if the agent is already registered
-            System.err.println("Error registering " + getLocalName() + " with the DF.");
-            fe.printStackTrace();
+            server = HttpServer.create(new InetSocketAddress(port), 0);
+            server.createContext("/spawn", new SpawnHandler());
+            server.setExecutor(null); // Use the default executor
+            server.start();
+            System.out.println(getLocalName() + " is listening for AI commands on http://localhost:" + port + "/spawn");
+        } catch (IOException e) {
+            System.err.println(getLocalName() + " failed to start HTTP server.");
+            e.printStackTrace();
         }
-
-        // TODO for later (Phase 4 & 5):
-        // Add a CyclicBehaviour here to listen for FIPA-ACL messages from the LLM_Order_Agent
-        // When a message is received, this agent should spawn a new PartAgent.
     }
 
     @Override
     protected void takeDown() {
-        // --- CLEANUP ---
-        // It is critical to deregister when the agent dies, otherwise the DF will
-        // keep advertising a "ghost" service, leading to failed negotiations from Part agents.
-        try {
-            DFService.deregister(this);
-            System.out.println(getLocalName() + " deregistered from the DF.");
-        } catch (FIPAException fe) {
-            fe.printStackTrace();
+        try { DFService.deregister(this); } catch (FIPAException fe) { fe.printStackTrace(); }
+        if (server != null) {
+            server.stop(0);
         }
-        System.out.println("Source Agent " + getAID().getName() + " shutting down.");
+        System.out.println("Source Agent " + getLocalName() + " shutting down.");
+    }
+
+    // --- THE API ENDPOINT LOGIC ---
+    private class SpawnHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            // We only accept POST requests to keep it strictly RESTful
+            if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                InputStream is = exchange.getRequestBody();
+                String body = new String(is.readAllBytes()).trim(); // Expecting simply "type1" or "type2"
+
+                String response;
+                int statusCode = 200;
+
+                try {
+                    // Generate a unique name (e.g., Part_001, Part_002)
+                    String agentName = "Part_" + String.format("%03d", partCounter++);
+
+                    // Access the JADE container to dynamically inject the new agent!
+                    ContainerController cc = getContainerController();
+                    AgentController part = cc.createNewAgent(agentName, "agents.PartAgent", new Object[]{body});
+                    part.start();
+
+                    response = "SUCCESS: Spawned " + agentName + " of type " + body + " from " + sourceName;
+                    System.out.println("\n[" + getLocalName() + "] API TRIGGERED! Injecting " + agentName + " (" + body + ") into the JADE platform.");
+                } catch (Exception e) {
+                    response = "ERROR: Failed to spawn part - " + e.getMessage();
+                    statusCode = 500;
+                    e.printStackTrace();
+                }
+
+                exchange.sendResponseHeaders(statusCode, response.length());
+                OutputStream os = exchange.getResponseBody();
+                os.write(response.getBytes());
+                os.close();
+            } else {
+                exchange.sendResponseHeaders(405, -1); // Method Not Allowed
+            }
+        }
     }
 }
