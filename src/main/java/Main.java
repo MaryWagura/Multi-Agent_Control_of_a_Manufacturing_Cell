@@ -19,11 +19,27 @@ public class Main {
 
         try {
 
-            // 4. Deploy the Crane Agent
+            // Deploy the Crane
             AgentController craneAgent = mainContainer.createNewAgent("Crane", "agents.CraneAgent", new Object[0]);
             craneAgent.start();
 
-            System.out.println("JADE Platform started successfully!");
+            // Deploy the two Sources
+            AgentController source1 = mainContainer.createNewAgent("Source1", "agents.SourceAgent", new Object[0]);
+            source1.start();
+            AgentController source2 = mainContainer.createNewAgent("Source2", "agents.SourceAgent", new Object[0]);
+            source2.start();
+
+            // Deploy the two Processes
+            AgentController process1 = mainContainer.createNewAgent("Process1", "agents.ProcessAgent", new Object[0]);
+            process1.start();
+            AgentController process2 = mainContainer.createNewAgent("Process2", "agents.ProcessAgent", new Object[0]);
+            process2.start();
+
+            // Deploy the Sink
+            AgentController sink = mainContainer.createNewAgent("Sink", "agents.SinkAgent", new Object[0]);
+            sink.start();
+
+            System.out.println("JADE Platform and all static agents started successfully!");
 
         } catch (Exception e) {
             e.printStackTrace();
