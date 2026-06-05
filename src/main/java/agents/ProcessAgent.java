@@ -1,6 +1,8 @@
 package agents;
 
 import jade.core.Agent;
+import jade.core.AID;
+import jade.core.behaviours.WakerBehaviour;
 import jade.domain.DFService;
 import jade.domain.FIPAAgentManagement.DFAgentDescription;
 import jade.domain.FIPAAgentManagement.ServiceDescription;
@@ -12,76 +14,139 @@ import jade.domain.FIPAAgentManagement.NotUnderstoodException;
 import jade.domain.FIPAAgentManagement.RefuseException;
 import jade.domain.FIPAAgentManagement.FailureException;
 
+// Modbus Imports
+import com.ghgande.j2mod.modbus.net.TCPMasterConnection;
+import com.ghgande.j2mod.modbus.io.ModbusTCPTransaction;
+import com.ghgande.j2mod.modbus.msg.WriteSingleRegisterRequest;
+import com.ghgande.j2mod.modbus.procimg.SimpleRegister;
+import java.net.InetAddress;
+
 public class ProcessAgent extends Agent {
+
+    private TCPMasterConnection modbusConnection;
+    private int startRegister; // The Modbus wire address to trigger this specific machine
+    private String serviceType;
 
     @Override
     protected void setup() {
-        // Read the specific service type from arguments
-        String serviceType = "processing_station"; // Default fallback
+        // --- 1. CONFIGURATION ---
         Object[] args = getArguments();
-        if (args != null && args.length > 0) {
-            serviceType = (String) args[0];
+        serviceType = (args != null && args.length > 0) ? (String) args[0] : "processing_station_1";
+
+        // Map the correct Modbus wire address based on the agent's identity
+        // Address 4 -> Wire 3. Address 5 -> Wire 4.
+        if (serviceType.equals("processing_station_1")) {
+            startRegister = 3;
+        } else if (serviceType.equals("processing_station_2")) {
+            startRegister = 4;
         }
 
-        System.out.println("Process Agent " + getLocalName() + " is ready. Providing: " + serviceType);
+        System.out.println("Process Agent " + getLocalName() + " starting up. Target Register: " + startRegister);
 
-        // 1. Create a description for the Yellow Pages
+        // --- 2. MODBUS CONNECTION ---
+        try {
+            InetAddress address = InetAddress.getByName("127.0.0.1");
+            modbusConnection = new TCPMasterConnection(address);
+            modbusConnection.setPort(502); // Make sure your simulation is running with sudo!
+            modbusConnection.connect();
+            System.out.println(getLocalName() + " connected to Modbus simulation.");
+        } catch (Exception e) {
+            System.err.println(getLocalName() + " failed to connect to Modbus.");
+            e.printStackTrace();
+        }
+
+        // --- 3. DF REGISTRATION ---
         DFAgentDescription dfd = new DFAgentDescription();
         dfd.setName(getAID());
-
         ServiceDescription sd = new ServiceDescription();
-        sd.setType(serviceType); // Use the dynamic type!
+        sd.setType(serviceType);
         sd.setName(getLocalName() + "_service");
         dfd.addServices(sd);
 
-        // 2. Register with the Directory Facilitator
         try {
             DFService.register(this, dfd);
-            System.out.println(getLocalName() + " registered successfully with the DF.");
         } catch (FIPAException fe) {
             fe.printStackTrace();
         }
-        // --- THE CONTRACT NET RESPONDER ---
-        // Create a template so the agent only listens for "Call For Proposal" (CFP) messages
-        MessageTemplate template = MessageTemplate.MatchPerformative(ACLMessage.CFP);
 
+        // --- 4. CONTRACT NET RESPONDER ---
+        MessageTemplate template = MessageTemplate.MatchPerformative(ACLMessage.CFP);
         addBehaviour(new ContractNetResponder(this, template) {
+
             @Override
             protected ACLMessage handleCfp(ACLMessage cfp) throws NotUnderstoodException, RefuseException {
-                System.out.println(getLocalName() + ": Received CFP for a job from " + cfp.getSender().getLocalName());
-
-                // We are available, so we formulate a proposal to do the job
+                // We are idle, so we agree to do the job
                 ACLMessage propose = cfp.createReply();
                 propose.setPerformative(ACLMessage.PROPOSE);
-                propose.setContent("10"); // We propose an arbitrary "cost" or "time" of 10
+                propose.setContent("10");
                 return propose;
             }
 
             @Override
             protected ACLMessage handleAcceptProposal(ACLMessage cfp, ACLMessage propose, ACLMessage accept) throws FailureException {
-                System.out.println(getLocalName() + ": Proposal accepted! Starting work for " + accept.getSender().getLocalName());
+                System.out.println(getLocalName() + ": Proposal accepted! Starting physical work for " + accept.getSender().getLocalName());
 
-                // TODO later: This is where Process1/Process2 will send the Modbus TCP signal
-                // to the simulation to physically run the machine!
-
-                // For now, we simulate the work instantly finishing and inform the Part
+                // Prepare the completion message, but DO NOT send it yet.
                 ACLMessage inform = accept.createReply();
                 inform.setPerformative(ACLMessage.INFORM);
                 inform.setContent("Process completed");
-                System.out.println(getLocalName() + ": Work finished. Notifying " + accept.getSender().getLocalName());
-                return inform;
+
+                // Launch a separate behavior to talk to the hardware
+                myAgent.addBehaviour(new MachineWorkerBehaviour(myAgent, 3000, inform));
+
+                // Return null to tell JADE protocol: "I am handling the reply asynchronously."
+                return null;
             }
         });
     }
 
     @Override
     protected void takeDown() {
-        // Always deregister from the Yellow Pages on shutdown
-        try {
-            DFService.deregister(this);
-        } catch (FIPAException fe) {
-            fe.printStackTrace();
+        try { DFService.deregister(this); } catch (FIPAException fe) { fe.printStackTrace(); }
+        if (modbusConnection != null && modbusConnection.isConnected()) {
+            modbusConnection.close();
         }
         System.out.println("Process Agent " + getAID().getName() + " shutting down.");
+    }
+
+    // --- THE HARDWARE EXECUTION ENGINE ---
+    private class MachineWorkerBehaviour extends WakerBehaviour {
+        private ACLMessage replyMessage;
+
+        // WakerBehaviour executes exactly once after the specified timeout (in milliseconds)
+        public MachineWorkerBehaviour(Agent a, long timeout, ACLMessage reply) {
+            super(a, timeout);
+            this.replyMessage = reply;
+
+            // Fire the Modbus start command immediately when this behavior is created
+            triggerMachine(1);
+        }
+
+        @Override
+        protected void onWake() {
+            // This runs after the timeout (e.g., 3 seconds later)
+            // Reset the machine register back to 0
+            triggerMachine(0);
+
+            // Now formally notify the Part that we are done
+            System.out.println(getLocalName() + ": Physical work finished. Notifying " + replyMessage.getAllReceiver().next());
+            myAgent.send(replyMessage);
+        }
+
+        private void triggerMachine(int command) {
+            try {
+                WriteSingleRegisterRequest request = new WriteSingleRegisterRequest(
+                        startRegister,
+                        new SimpleRegister(command) // Write 1 to start, 0 to reset
+                );
+                request.setUnitID(1); // Crucial for j2mod routing
+
+                ModbusTCPTransaction transaction = new ModbusTCPTransaction(modbusConnection);
+                transaction.setRequest(request);
+                transaction.execute();
+            } catch (Exception e) {
+                System.err.println(getLocalName() + " failed to send Modbus command.");
+            }
+        }
     }
 }
