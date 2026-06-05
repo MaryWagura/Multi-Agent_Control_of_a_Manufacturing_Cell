@@ -31,10 +31,10 @@ public class PartAgent extends Agent {
         processPlan = new LinkedList<>();
 
         if (partType.equals("type1")) {
-            processPlan.addAll(Arrays.asList("processing_station", "sink_station"));
+            processPlan.addAll(Arrays.asList("processing_station_1", "sink_station"));
         } else if (partType.equals("type2")) {
-            // NOTE: We will need to ensure Process2 registers this exact string later!
-            processPlan.addAll(Arrays.asList("processing_station", "processing_station", "sink_station"));
+            // Now it will specifically ask for 2, then 1!
+            processPlan.addAll(Arrays.asList("processing_station_2", "processing_station_1", "sink_station"));
         }
 
         System.out.println("[" + getLocalName() + "] Process plan loaded: " + processPlan);
