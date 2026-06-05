@@ -96,7 +96,11 @@ public class CraneAgent extends Agent {
 
     @Override
     protected void takeDown() {
-        try { DFService.deregister(this); } catch (FIPAException fe) { fe.printStackTrace(); }
+        try {
+            DFService.deregister(this);
+        } catch (FIPAException fe) {
+            fe.printStackTrace();
+        }
         if (modbusConnection != null && modbusConnection.isConnected()) {
             modbusConnection.close();
         }
@@ -133,13 +137,16 @@ public class CraneAgent extends Agent {
     }
 
     // --- NEW FULL PHYSICAL MACRO BEHAVIOUR ---
-// --- NEW FULL PHYSICAL MACRO BEHAVIOUR ---
     private class CranePickAndPlaceBehaviour extends jade.core.behaviours.OneShotBehaviour {
         private ACLMessage replyMessage;
         private int pickupX, dropoffX;
 
+        // THE FIX: Lock in the agent reference so JADE's garbage collector doesn't clear it
+        private Agent agentRef;
+
         public CranePickAndPlaceBehaviour(Agent a, ACLMessage reply, int pickupX, int dropoffX) {
             super(a);
+            this.agentRef = a; // Save it permanently!
             this.replyMessage = reply;
             this.pickupX = pickupX;
             this.dropoffX = dropoffX;
@@ -149,45 +156,43 @@ public class CraneAgent extends Agent {
         public void action() {
             new Thread(() -> {
                 try {
-                    // --- THE FIX: CRITICAL SAFETY CLEARANCE ---
                     System.out.println(getLocalName() + ": Raising to safe travel height.");
-                    writeModbus(2, 200); // Raise Y to safe height FIRST
+                    writeModbus(2, 200);
                     Thread.sleep(1000);
 
-                    // --- PICKUP SEQUENCE ---
                     System.out.println(getLocalName() + ": Moving to pickup X:" + pickupX);
-                    writeModbus(1, pickupX); // Move X to Source
-                    Thread.sleep(2000); // Wait for travel
+                    writeModbus(1, pickupX);
+                    Thread.sleep(2000);
 
-                    writeModbus(2, 82); // Lower Y
+                    writeModbus(2, 82);
                     Thread.sleep(1000);
 
-                    writeModbus(3, 1); // Vacuum ON (Grip)
+                    writeModbus(3, 1);
                     Thread.sleep(500);
 
-                    writeModbus(2, 200); // Raise Y (Travel height)
+                    writeModbus(2, 200);
                     Thread.sleep(1000);
 
-                    // --- DROPOFF SEQUENCE ---
                     System.out.println(getLocalName() + ": Part secured. Moving to dropoff X:" + dropoffX);
-                    writeModbus(1, dropoffX); // Move X to Destination
-                    Thread.sleep(2500); // Wait for travel
+                    writeModbus(1, dropoffX);
+                    Thread.sleep(2500);
 
-                    writeModbus(2, 82); // Lower Y
+                    writeModbus(2, 82);
                     Thread.sleep(1000);
 
-                    writeModbus(3, 0); // Vacuum OFF (Release)
+                    writeModbus(3, 0);
                     Thread.sleep(500);
 
-                    writeModbus(2, 200); // Raise Y back to safe height
+                    writeModbus(2, 200);
                     Thread.sleep(1000);
 
-                    // Physical movement complete, notify the Part!
-                    myAgent.send(replyMessage);
+                    // Use our explicitly saved reference instead of JADE's internal 'myAgent'
+                    agentRef.send(replyMessage);
                 } catch (Exception e) {
                     System.err.println("Crane macro failed.");
                     e.printStackTrace();
                 }
             }).start();
         }
-    }}
+    }
+}
