@@ -67,4 +67,17 @@ public class PartNegotiator extends ContractNetInitiator {
             ((PartAgent) myAgent).negotiationFinished();
         }
     }
+
+    /**
+     * Triggered if the Crane or Machine actively refuses to do the work
+     * after initially proposing (e.g., if the physical sensor is empty).
+     */
+    @Override
+    protected void handleFailure(ACLMessage failure) {
+        System.err.println("\n[" + myAgent.getLocalName() + "] FATAL ERROR: Received failure notice from " + failure.getSender().getLocalName());
+        System.err.println("[" + myAgent.getLocalName() + "] Reason: The physical part does not exist. Shutting down ghost agent.");
+
+        // Kill the agent so it doesn't get stuck in limbo
+        myAgent.doDelete();
+    }
 }
