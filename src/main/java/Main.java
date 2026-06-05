@@ -39,6 +39,10 @@ public class Main {
             AgentController sink = mainContainer.createNewAgent("Sink", "agents.SinkAgent", new Object[0]);
             sink.start();
 
+            // --- INJECT A TEST PART ---
+            AgentController testPart = mainContainer.createNewAgent("Part_001", "agents.PartAgent", new Object[]{"type2"});
+            testPart.start();
+
             System.out.println("JADE Platform and all static agents started successfully!");
 
         } catch (Exception e) {

@@ -1,6 +1,13 @@
 package agents;
 
 import jade.core.Agent;
+import jade.core.AID;
+import jade.core.behaviours.Behaviour;
+import jade.domain.DFService;
+import jade.domain.FIPAAgentManagement.DFAgentDescription;
+import jade.domain.FIPAAgentManagement.ServiceDescription;
+import jade.domain.FIPAException;
+
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.Queue;
@@ -12,39 +19,94 @@ public class PartAgent extends Agent {
 
     @Override
     protected void setup() {
-        // 1. Read the arguments passed during agent creation
         Object[] args = getArguments();
         if (args != null && args.length > 0) {
             partType = (String) args[0];
         } else {
-            partType = "type1"; // Default fallback
+            partType = "type1";
         }
 
         System.out.println("Part Agent [" + getLocalName() + "] (Type: " + partType + ") has entered the system.");
 
-        // 2. Build the process plan based on the product type (Requirements R1 & R2)
         processPlan = new LinkedList<>();
 
         if (partType.equals("type1")) {
-            // Type 1 needs Process 1, then the Sink
             processPlan.addAll(Arrays.asList("processing_station", "sink_station"));
         } else if (partType.equals("type2")) {
-            // Type 2 needs Process 2, then Process 1, then the Sink
-            processPlan.addAll(Arrays.asList("processing_station_2", "processing_station", "sink_station"));
+            // NOTE: We will need to ensure Process2 registers this exact string later!
+            processPlan.addAll(Arrays.asList("processing_station", "processing_station", "sink_station"));
         }
 
         System.out.println("[" + getLocalName() + "] Process plan loaded: " + processPlan);
 
-        // TODO (Next Phase):
-        // Implement a JADE FSMBehaviour (Finite State Machine) to:
-        // 1. Pop the next required service off the queue.
-        // 2. Search the DF for agents providing that service.
-        // 3. Initiate FIPA Contract Net Protocol (CFP) to negotiate with them.
-        // 4. Contact the Crane for transport.
+        // Start the routing engine
+        addBehaviour(new RouteExecutionBehaviour());
     }
 
     @Override
     protected void takeDown() {
         System.out.println("Part Agent [" + getLocalName() + "] has completed its plan and left the system.");
+    }
+
+    // --- The Routing Engine ---
+    private class RouteExecutionBehaviour extends Behaviour {
+        private int step = 0;
+        private AID targetProvider = null;
+
+        @Override
+        public void action() {
+            switch (step) {
+                case 0: // Step 0: Find the required service in the DF
+                    if (processPlan.isEmpty()) {
+                        System.out.println("[" + getLocalName() + "] All steps complete! Shutting down.");
+                        step = 3; // Move to exit state
+                        return;
+                    }
+
+                    String neededService = processPlan.peek();
+                    System.out.println("\n[" + getLocalName() + "] Looking for service: " + neededService);
+
+                    // Build a search template for the DF
+                    DFAgentDescription template = new DFAgentDescription();
+                    ServiceDescription sd = new ServiceDescription();
+                    sd.setType(neededService);
+                    template.addServices(sd);
+
+                    try {
+                        DFAgentDescription[] result = DFService.search(myAgent, template);
+                        if (result.length > 0) {
+                            // Grab the first agent that provides this service
+                            targetProvider = result[0].getName();
+                            System.out.println("[" + getLocalName() + "] Found provider: " + targetProvider.getLocalName());
+                            step = 1;
+                        } else {
+                            System.out.println("[" + getLocalName() + "] No provider found for " + neededService + ". Waiting...");
+                            block(2000); // Sleep for 2 seconds and try again
+                        }
+                    } catch (FIPAException fe) {
+                        fe.printStackTrace();
+                    }
+                    break;
+
+                case 1: // Step 1: Negotiate (Placeholder)
+                    System.out.println("[" + getLocalName() + "] Ready to send FIPA CFP to " + targetProvider.getLocalName() + "...");
+
+                    // For now, we will simulate a successful negotiation and process completion
+                    // by simply removing the service from our queue and looping back to Step 0.
+                    processPlan.poll();
+                    step = 0;
+                    break;
+            }
+        }
+
+        @Override
+        public boolean done() {
+            // The behavior terminates when step 3 is reached
+            if (step == 3) {
+                doDelete(); // Kill the agent when the queue is empty
+                return true;
+            }
+            return false;
+        }
     }
 }
