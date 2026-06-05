@@ -58,37 +58,28 @@ public class PartAgent extends Agent {
         System.out.println("Part Agent [" + getLocalName() + "] has completed its plan and left the system.");
     }
 
-    // --- NEW STATE MANAGEMENT LOGIC ---
+    // --- STATE MANAGEMENT LOGIC ---
+    // This public method allows external behaviors (like PartNegotiator) to inform
+    // the main agent that a step (transport OR processing) is done.
     public void negotiationFinished() {
         if (!isAtDestination) {
             // If we weren't at the destination, it means the Crane just finished dropping us off
             System.out.println("[" + getLocalName() + "] Successfully transported to destination.");
-            isAtDestination = true; // Flip the flag
+            isAtDestination = true; // Flip the flag so we know we arrived
             addBehaviour(new RouteExecutionBehaviour()); // Restart behavior to find the machine
         } else {
             // If we were at the destination, the Machine just finished its work
-            processPlan.poll();
+            processPlan.poll(); // Pop the completed service off the itinerary queue
             System.out.println("[" + getLocalName() + "] Service complete. Queue updated. Remaining steps: " + processPlan);
             isAtDestination = false; // Reset the flag for the NEXT stop in the queue
             addBehaviour(new RouteExecutionBehaviour()); // Restart behavior to look for the next transport
         }
     }
 
-    // --- STATE MANAGEMENT ---
-    // This public method allows external behaviors (like PartNegotiator) to inform
-    // the main agent that a step is done, so it can update its queue and move on.
-    public void markServiceComplete() {
-        processPlan.poll(); // Pop the completed service off the itinerary queue
-        System.out.println("[" + getLocalName() + "] Queue updated. Remaining steps: " + processPlan);
-
-        // Restart the routing engine to find the next service in the queue
-        addBehaviour(new RouteExecutionBehaviour());
-    }
-
     // --- THE ROUTING ENGINE (Internal State Machine) ---
     private class RouteExecutionBehaviour extends Behaviour {
         private int step = 0; // Tracks the current state of the behavior
-        private AID targetProvider = null; // Holds the ID of the machine we discover
+        private AID targetProvider = null; // Holds the ID of the machine/crane we discover
         private String neededService = null; // Class-level variable so it survives between steps
 
         @Override
@@ -105,13 +96,23 @@ public class PartAgent extends Agent {
 
                     // Peek at (but do not remove) the next required service
                     neededService = processPlan.peek();
-                    System.out.println("\n[" + getLocalName() + "] Looking for service: " + neededService);
 
                     // Build a search template for the DF Yellow Pages
                     DFAgentDescription template = new DFAgentDescription();
                     ServiceDescription sd = new ServiceDescription();
-                    sd.setType(neededService);
-                    template.addServices(sd);
+
+                    // THE CRANE FIX: Determine if we need a taxi or a machine
+                    if (!isAtDestination) {
+                        // We need a ride. Ask the DF for the transport service.
+                        System.out.println("\n[" + getLocalName() + "] Needs to go to: " + neededService + ". Hailing Crane...");
+                        sd.setType("transport_service");
+                    } else {
+                        // We arrived. Ask the DF for the actual machine.
+                        System.out.println("\n[" + getLocalName() + "] Arrived! Requesting service from: " + neededService);
+                        sd.setType(neededService);
+                    }
+
+                    template.addServices(sd); // Attach the service requirement to the search template
 
                     try {
                         // Query the DF
@@ -122,7 +123,7 @@ public class PartAgent extends Agent {
                             System.out.println("[" + getLocalName() + "] Found provider: " + targetProvider.getLocalName());
                             step = 1; // Move to negotiation state
                         } else {
-                            System.out.println("[" + getLocalName() + "] No provider found for " + neededService + ". Waiting...");
+                            System.out.println("[" + getLocalName() + "] No provider found. Waiting...");
                             block(2000); // Sleep thread for 2 seconds and retry
                         }
                     } catch (FIPAException fe) {
@@ -135,13 +136,16 @@ public class PartAgent extends Agent {
 
                     // 1. Build the Call For Proposal (CFP) message
                     ACLMessage cfp = new ACLMessage(ACLMessage.CFP);
-                    cfp.addReceiver(targetProvider); // Address it to the machine we just found
-                    cfp.setContent(neededService); // Tell them what specific job we need done
+                    cfp.addReceiver(targetProvider); // Address it to the machine or crane we just found
 
-                    // 2. Attach the external PartNegotiator behavior to handle the conversation
+                    // 2. Send the destination (e.g., "processing_station_2") in the content.
+                    // If it's a machine, it ignores this. If it's the Crane, it uses this to map the X coordinate!
+                    cfp.setContent(neededService);
+
+                    // 3. Attach the external PartNegotiator behavior to handle the conversation
                     myAgent.addBehaviour(new PartNegotiator(myAgent, cfp));
 
-                    // 3. Terminate THIS specific routing behavior thread (the Negotiator takes over)
+                    // 4. Terminate THIS specific routing behavior thread (the Negotiator takes over)
                     step = 3;
                     break;
             }
