@@ -7,6 +7,7 @@ import jade.domain.DFService;
 import jade.domain.FIPAAgentManagement.DFAgentDescription;
 import jade.domain.FIPAAgentManagement.ServiceDescription;
 import jade.domain.FIPAException;
+import jade.lang.acl.ACLMessage;
 
 import java.util.Arrays;
 import java.util.LinkedList;
@@ -88,15 +89,29 @@ public class PartAgent extends Agent {
                     }
                     break;
 
-                case 1: // Step 1: Negotiate (Placeholder)
-                    System.out.println("[" + getLocalName() + "] Ready to send FIPA CFP to " + targetProvider.getLocalName() + "...");
+                case 1: // Step 1: Hand off to external Negotiator
+                    System.out.println("[" + getLocalName() + "] Initiating Contract Net with " + targetProvider.getLocalName());
 
-                    // For now, we will simulate a successful negotiation and process completion
-                    // by simply removing the service from our queue and looping back to Step 0.
-                    processPlan.poll();
-                    step = 0;
+                    // Build the Call For Proposal message
+                    ACLMessage cfp = new ACLMessage(ACLMessage.CFP);
+                    cfp.addReceiver(targetProvider);
+                    cfp.setContent(neededService); // Tell them what job we want done
+
+                    // Add the external behavior and kill this internal one
+                    myAgent.addBehaviour(new PartNegotiator(myAgent, cfp));
+
+                    step = 3; // Terminate this specific RouteExecutionBehaviour thread
                     break;
             }
+        }
+
+        // This is called by the external negotiation behavior when a process finishes
+        public void markServiceComplete() {
+            processPlan.poll(); // Remove the finished job from the queue
+            System.out.println("[" + getLocalName() + "] Queue updated. Remaining steps: " + processPlan);
+
+            // Restart the routing engine to find the next service
+            addBehaviour(new RouteExecutionBehaviour());
         }
 
         @Override
