@@ -69,19 +69,18 @@ public class SourceAgent extends Agent {
     private class SpawnHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            // We only accept POST requests to keep it strictly RESTful
             if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
                 InputStream is = exchange.getRequestBody();
-                String body = new String(is.readAllBytes()).trim(); // Expecting simply "type1" or "type2"
+                String body = new String(is.readAllBytes()).trim();
 
                 String response;
                 int statusCode = 200;
 
                 try {
-                    // Generate a unique name (e.g., Part_001, Part_002)
-                    String agentName = "Part_" + String.format("%03d", partCounter++);
+                    // THE FIX: Guarantee a completely unique name using the timestamp
+                    String uniqueID = String.valueOf(System.currentTimeMillis()).substring(8);
+                    String agentName = "Part_" + uniqueID;
 
-                    // Access the JADE container to dynamically inject the new agent!
                     ContainerController cc = getContainerController();
                     AgentController part = cc.createNewAgent(agentName, "agents.PartAgent", new Object[]{body});
                     part.start();
@@ -99,7 +98,7 @@ public class SourceAgent extends Agent {
                 os.write(response.getBytes());
                 os.close();
             } else {
-                exchange.sendResponseHeaders(405, -1); // Method Not Allowed
+                exchange.sendResponseHeaders(405, -1);
             }
         }
     }
