@@ -15,32 +15,38 @@ import java.util.Queue;
 
 public class PartAgent extends Agent {
 
+    // Internal state variables for the Part
     private String partType;
-    private Queue<String> processPlan;
+    private Queue<String> processPlan; // Acts as the dynamic itinerary for the part
 
     @Override
     protected void setup() {
+        // --- INITIALIZATION ---
+        // Read the arguments passed by Main.java to determine product type
         Object[] args = getArguments();
         if (args != null && args.length > 0) {
             partType = (String) args[0];
         } else {
-            partType = "type1";
+            partType = "type1"; // Fallback safety
         }
 
         System.out.println("Part Agent [" + getLocalName() + "] (Type: " + partType + ") has entered the system.");
 
+        // --- ROUTE GENERATION ---
+        // Build the specific process plan based on the product type (Requirements R1 & R2)
         processPlan = new LinkedList<>();
 
         if (partType.equals("type1")) {
+            // Type 1: Process 1 -> Sink
             processPlan.addAll(Arrays.asList("processing_station_1", "sink_station"));
         } else if (partType.equals("type2")) {
-            // Now it will specifically ask for 2, then 1!
+            // Type 2: Process 2 -> Process 1 -> Sink
             processPlan.addAll(Arrays.asList("processing_station_2", "processing_station_1", "sink_station"));
         }
 
         System.out.println("[" + getLocalName() + "] Process plan loaded: " + processPlan);
 
-        // Start the routing engine
+        // Kick off the routing engine behavior
         addBehaviour(new RouteExecutionBehaviour());
     }
 
@@ -49,76 +55,87 @@ public class PartAgent extends Agent {
         System.out.println("Part Agent [" + getLocalName() + "] has completed its plan and left the system.");
     }
 
-    // --- The Routing Engine ---
+    // --- STATE MANAGEMENT ---
+    // This public method allows external behaviors (like PartNegotiator) to inform
+    // the main agent that a step is done, so it can update its queue and move on.
+    public void markServiceComplete() {
+        processPlan.poll(); // Pop the completed service off the itinerary queue
+        System.out.println("[" + getLocalName() + "] Queue updated. Remaining steps: " + processPlan);
+
+        // Restart the routing engine to find the next service in the queue
+        addBehaviour(new RouteExecutionBehaviour());
+    }
+
+    // --- THE ROUTING ENGINE (Internal State Machine) ---
     private class RouteExecutionBehaviour extends Behaviour {
-        private int step = 0;
-        private AID targetProvider = null;
+        private int step = 0; // Tracks the current state of the behavior
+        private AID targetProvider = null; // Holds the ID of the machine we discover
+        private String neededService = null; // Class-level variable so it survives between steps
 
         @Override
         public void action() {
             switch (step) {
-                case 0: // Step 0: Find the required service in the DF
+                case 0: // STATE 0: Read Queue and Search Directory Facilitator (DF)
+
+                    // Check if the itinerary is empty
                     if (processPlan.isEmpty()) {
                         System.out.println("[" + getLocalName() + "] All steps complete! Shutting down.");
-                        step = 3; // Move to exit state
+                        step = 3; // Jump to termination state
                         return;
                     }
 
-                    String neededService = processPlan.peek();
+                    // Peek at (but do not remove) the next required service
+                    neededService = processPlan.peek();
                     System.out.println("\n[" + getLocalName() + "] Looking for service: " + neededService);
 
-                    // Build a search template for the DF
+                    // Build a search template for the DF Yellow Pages
                     DFAgentDescription template = new DFAgentDescription();
                     ServiceDescription sd = new ServiceDescription();
                     sd.setType(neededService);
                     template.addServices(sd);
 
                     try {
+                        // Query the DF
                         DFAgentDescription[] result = DFService.search(myAgent, template);
                         if (result.length > 0) {
-                            // Grab the first agent that provides this service
+                            // Match found! Save the Agent ID (AID) of the provider
                             targetProvider = result[0].getName();
                             System.out.println("[" + getLocalName() + "] Found provider: " + targetProvider.getLocalName());
-                            step = 1;
+                            step = 1; // Move to negotiation state
                         } else {
                             System.out.println("[" + getLocalName() + "] No provider found for " + neededService + ". Waiting...");
-                            block(2000); // Sleep for 2 seconds and try again
+                            block(2000); // Sleep thread for 2 seconds and retry
                         }
                     } catch (FIPAException fe) {
                         fe.printStackTrace();
                     }
                     break;
 
-                case 1: // Step 1: Hand off to external Negotiator
+                case 1: // STATE 1: Hand off to the External Negotiator
                     System.out.println("[" + getLocalName() + "] Initiating Contract Net with " + targetProvider.getLocalName());
 
-                    // Build the Call For Proposal message
+                    // 1. Build the Call For Proposal (CFP) message
                     ACLMessage cfp = new ACLMessage(ACLMessage.CFP);
-                    cfp.addReceiver(targetProvider);
-                    cfp.setContent(neededService); // Tell them what job we want done
+                    cfp.addReceiver(targetProvider); // Address it to the machine we just found
+                    cfp.setContent(neededService); // Tell them what specific job we need done
 
-                    // Add the external behavior and kill this internal one
+                    // 2. Attach the external PartNegotiator behavior to handle the conversation
                     myAgent.addBehaviour(new PartNegotiator(myAgent, cfp));
 
-                    step = 3; // Terminate this specific RouteExecutionBehaviour thread
+                    // 3. Terminate THIS specific routing behavior thread (the Negotiator takes over)
+                    step = 3;
                     break;
             }
         }
 
-        // This is called by the external negotiation behavior when a process finishes
-        public void markServiceComplete() {
-            processPlan.poll(); // Remove the finished job from the queue
-            System.out.println("[" + getLocalName() + "] Queue updated. Remaining steps: " + processPlan);
-
-            // Restart the routing engine to find the next service
-            addBehaviour(new RouteExecutionBehaviour());
-        }
-
         @Override
         public boolean done() {
-            // The behavior terminates when step 3 is reached
+            // The behavior formally terminates when step == 3
             if (step == 3) {
-                doDelete(); // Kill the agent when the queue is empty
+                // If the queue is totally empty when we hit step 3, kill the agent entirely
+                if(processPlan.isEmpty()){
+                    doDelete();
+                }
                 return true;
             }
             return false;
