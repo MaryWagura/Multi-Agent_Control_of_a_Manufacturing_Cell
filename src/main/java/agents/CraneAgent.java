@@ -1,7 +1,6 @@
 package agents;
 
 import jade.core.Agent;
-import jade.core.behaviours.WakerBehaviour;
 import jade.domain.DFService;
 import jade.domain.FIPAAgentManagement.DFAgentDescription;
 import jade.domain.FIPAAgentManagement.ServiceDescription;
@@ -23,8 +22,6 @@ import java.net.InetAddress;
 public class CraneAgent extends Agent {
 
     private TCPMasterConnection modbusConnection;
-    // Address 1 is the setX register from your documentation
-    private static final int CRANE_X_REGISTER = 1;
 
     @Override
     protected void setup() {
@@ -74,20 +71,25 @@ public class CraneAgent extends Agent {
 
             @Override
             protected ACLMessage handleAcceptProposal(ACLMessage cfp, ACLMessage propose, ACLMessage accept) throws FailureException {
-                String destination = cfp.getContent();
-                System.out.println(getLocalName() + ": Proposal accepted! Moving to " + destination);
+                // Parse the "PickupLocation,DropoffLocation" string from the Part
+                String[] route = cfp.getContent().split(",");
+                String pickup = route[0];
+                String dropoff = route[1];
+
+                System.out.println(getLocalName() + ": Proposal accepted! Executing pick-and-place from " + pickup + " to " + dropoff);
 
                 ACLMessage inform = accept.createReply();
                 inform.setPerformative(ACLMessage.INFORM);
-                inform.setContent("Arrived at " + destination);
+                inform.setContent("Arrived at " + dropoff);
 
-                // Convert the string destination to an X coordinate
-                int targetX = getCoordinateForDestination(destination);
+                // Convert the string destinations to X coordinates
+                int pickupX = getCoordinateForDestination(pickup);
+                int dropoffX = getCoordinateForDestination(dropoff);
 
-                // Launch the async behavior to move the hardware
-                myAgent.addBehaviour(new CraneMoveBehaviour(myAgent, 4000, inform, targetX));
+                // Run the physical macro
+                myAgent.addBehaviour(new CranePickAndPlaceBehaviour(myAgent, inform, pickupX, dropoffX));
 
-                return null; // Handle async
+                return null;
             }
         });
     }
@@ -102,52 +104,90 @@ public class CraneAgent extends Agent {
     }
 
     // --- HARDWARE COORDINATE MAPPER ---
+    // Moved to the main class scope so the setup() method can see it
     private int getCoordinateForDestination(String destination) {
         switch (destination) {
-            case "source_station_1": return 55;
-            case "source_station_2": return 158;
-            case "processing_station_1": return 450;
-            case "processing_station_2": return 650;
-            case "sink_station": return 945;
-            default: return 0; // Default safe position
+            case "source_station_1":
+                return 55;
+            case "source_station_2":
+                return 158;
+            case "processing_station_1":
+                return 450;
+            case "processing_station_2":
+                return 650;
+            case "sink_station":
+                return 945;
+            default:
+                return 0; // Default safe position
         }
     }
 
-    // --- ASYNC HARDWARE EXECUTION ---
-    private class CraneMoveBehaviour extends WakerBehaviour {
+    // --- MODBUS WRITER HELPER ---
+    // Moved to main class scope so any behavior can use it cleanly
+    private void writeModbus(int register, int value) throws Exception {
+        WriteSingleRegisterRequest request = new WriteSingleRegisterRequest(register, new SimpleRegister(value));
+        request.setUnitID(1);
+        ModbusTCPTransaction transaction = new ModbusTCPTransaction(modbusConnection);
+        transaction.setRequest(request);
+        transaction.execute();
+    }
+
+    // --- NEW FULL PHYSICAL MACRO BEHAVIOUR ---
+// --- NEW FULL PHYSICAL MACRO BEHAVIOUR ---
+    private class CranePickAndPlaceBehaviour extends jade.core.behaviours.OneShotBehaviour {
         private ACLMessage replyMessage;
-        private int targetX;
+        private int pickupX, dropoffX;
 
-        public CraneMoveBehaviour(Agent a, long timeout, ACLMessage reply, int x) {
-            super(a, timeout);
+        public CranePickAndPlaceBehaviour(Agent a, ACLMessage reply, int pickupX, int dropoffX) {
+            super(a);
             this.replyMessage = reply;
-            this.targetX = x;
-
-            // Fire the Modbus movement command immediately
-            moveCrane(targetX);
+            this.pickupX = pickupX;
+            this.dropoffX = dropoffX;
         }
 
         @Override
-        protected void onWake() {
-            // Once the timeout finishes (assuming travel time), notify the Part
-            System.out.println(getLocalName() + ": Arrived at X:" + targetX + ". Notifying " + replyMessage.getAllReceiver().next());
-            myAgent.send(replyMessage);
-        }
+        public void action() {
+            new Thread(() -> {
+                try {
+                    // --- THE FIX: CRITICAL SAFETY CLEARANCE ---
+                    System.out.println(getLocalName() + ": Raising to safe travel height.");
+                    writeModbus(2, 200); // Raise Y to safe height FIRST
+                    Thread.sleep(1000);
 
-        private void moveCrane(int target) {
-            try {
-                WriteSingleRegisterRequest request = new WriteSingleRegisterRequest(
-                        CRANE_X_REGISTER,
-                        new SimpleRegister(target)
-                );
-                request.setUnitID(1);
+                    // --- PICKUP SEQUENCE ---
+                    System.out.println(getLocalName() + ": Moving to pickup X:" + pickupX);
+                    writeModbus(1, pickupX); // Move X to Source
+                    Thread.sleep(2000); // Wait for travel
 
-                ModbusTCPTransaction transaction = new ModbusTCPTransaction(modbusConnection);
-                transaction.setRequest(request);
-                transaction.execute();
-            } catch (Exception e) {
-                System.err.println(getLocalName() + " failed to move crane via Modbus.");
-            }
+                    writeModbus(2, 82); // Lower Y
+                    Thread.sleep(1000);
+
+                    writeModbus(3, 1); // Vacuum ON (Grip)
+                    Thread.sleep(500);
+
+                    writeModbus(2, 200); // Raise Y (Travel height)
+                    Thread.sleep(1000);
+
+                    // --- DROPOFF SEQUENCE ---
+                    System.out.println(getLocalName() + ": Part secured. Moving to dropoff X:" + dropoffX);
+                    writeModbus(1, dropoffX); // Move X to Destination
+                    Thread.sleep(2500); // Wait for travel
+
+                    writeModbus(2, 82); // Lower Y
+                    Thread.sleep(1000);
+
+                    writeModbus(3, 0); // Vacuum OFF (Release)
+                    Thread.sleep(500);
+
+                    writeModbus(2, 200); // Raise Y back to safe height
+                    Thread.sleep(1000);
+
+                    // Physical movement complete, notify the Part!
+                    myAgent.send(replyMessage);
+                } catch (Exception e) {
+                    System.err.println("Crane macro failed.");
+                    e.printStackTrace();
+                }
+            }).start();
         }
-    }
-}
+    }}

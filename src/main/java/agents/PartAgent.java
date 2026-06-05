@@ -21,6 +21,8 @@ public class PartAgent extends Agent {
 
     // Tracks if we have taken the Crane to the current required service yet
     private boolean isAtDestination = false;
+    // Track where we physically are!
+    private String currentLocation;
 
     @Override
     protected void setup() {
@@ -40,10 +42,10 @@ public class PartAgent extends Agent {
         processPlan = new LinkedList<>();
 
         if (partType.equals("type1")) {
-            // Type 1: Process 1 -> Sink
+            currentLocation = "source_station_1";
             processPlan.addAll(Arrays.asList("processing_station_1", "sink_station"));
         } else if (partType.equals("type2")) {
-            // Type 2: Process 2 -> Process 1 -> Sink
+            currentLocation = "source_station_2";
             processPlan.addAll(Arrays.asList("processing_station_2", "processing_station_1", "sink_station"));
         }
 
@@ -63,16 +65,19 @@ public class PartAgent extends Agent {
     // the main agent that a step (transport OR processing) is done.
     public void negotiationFinished() {
         if (!isAtDestination) {
-            // If we weren't at the destination, it means the Crane just finished dropping us off
+            // Crane finished dropping us off
             System.out.println("[" + getLocalName() + "] Successfully transported to destination.");
-            isAtDestination = true; // Flip the flag so we know we arrived
-            addBehaviour(new RouteExecutionBehaviour()); // Restart behavior to find the machine
+
+            // Update our current physical location to wherever the Crane just went to!
+            currentLocation = processPlan.peek();
+            isAtDestination = true;
+            addBehaviour(new RouteExecutionBehaviour());
         } else {
-            // If we were at the destination, the Machine just finished its work
-            processPlan.poll(); // Pop the completed service off the itinerary queue
+            // Machine finished
+            processPlan.poll();
             System.out.println("[" + getLocalName() + "] Service complete. Queue updated. Remaining steps: " + processPlan);
-            isAtDestination = false; // Reset the flag for the NEXT stop in the queue
-            addBehaviour(new RouteExecutionBehaviour()); // Restart behavior to look for the next transport
+            isAtDestination = false;
+            addBehaviour(new RouteExecutionBehaviour());
         }
     }
 
@@ -138,9 +143,14 @@ public class PartAgent extends Agent {
                     ACLMessage cfp = new ACLMessage(ACLMessage.CFP);
                     cfp.addReceiver(targetProvider); // Address it to the machine or crane we just found
 
-                    // 2. Send the destination (e.g., "processing_station_2") in the content.
-                    // If it's a machine, it ignores this. If it's the Crane, it uses this to map the X coordinate!
-                    cfp.setContent(neededService);
+                    // 2. SET THE CONTENT (THIS IS THE UPDATED PART!)
+                    // If we are talking to the Crane, send "PickupLocation,DropoffLocation".
+                    // Otherwise (talking to a machine), just send "DropoffLocation".
+                    if (!isAtDestination) {
+                        cfp.setContent(currentLocation + "," + neededService);
+                    } else {
+                        cfp.setContent(neededService);
+                    }
 
                     // 3. Attach the external PartNegotiator behavior to handle the conversation
                     myAgent.addBehaviour(new PartNegotiator(myAgent, cfp));
