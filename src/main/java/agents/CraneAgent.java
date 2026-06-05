@@ -1,84 +1,152 @@
 package agents;
 
 import jade.core.Agent;
-import jade.core.behaviours.OneShotBehaviour;
+import jade.core.behaviours.WakerBehaviour;
+import jade.domain.DFService;
+import jade.domain.FIPAAgentManagement.DFAgentDescription;
+import jade.domain.FIPAAgentManagement.ServiceDescription;
+import jade.domain.FIPAException;
+import jade.lang.acl.ACLMessage;
+import jade.lang.acl.MessageTemplate;
+import jade.proto.ContractNetResponder;
+import jade.domain.FIPAAgentManagement.NotUnderstoodException;
+import jade.domain.FIPAAgentManagement.RefuseException;
+import jade.domain.FIPAAgentManagement.FailureException;
+
+// Modbus Imports
 import com.ghgande.j2mod.modbus.net.TCPMasterConnection;
+import com.ghgande.j2mod.modbus.io.ModbusTCPTransaction;
 import com.ghgande.j2mod.modbus.msg.WriteSingleRegisterRequest;
-import com.ghgande.j2mod.modbus.msg.ModbusResponse;
 import com.ghgande.j2mod.modbus.procimg.SimpleRegister;
 import java.net.InetAddress;
-import com.ghgande.j2mod.modbus.io.ModbusTCPTransaction;
 
 public class CraneAgent extends Agent {
 
     private TCPMasterConnection modbusConnection;
-    private static final String SIMULATION_IP = "127.0.0.1";
-    //502 is the default port set in windows, when using my linux, had to use sudo to force the port to open
-    private static final int MODBUS_PORT = 502; // Standard Modbus TCP port
+    // Address 1 is the setX register from your documentation
+    private static final int CRANE_X_REGISTER = 1;
 
     @Override
     protected void setup() {
-        System.out.println("Crane Agent " + getAID().getName() + " is starting up...");
+        System.out.println("Crane Agent " + getLocalName() + " is starting up...");
+
+        // --- 1. MODBUS CONNECTION ---
+        try {
+            InetAddress address = InetAddress.getByName("127.0.0.1");
+            modbusConnection = new TCPMasterConnection(address);
+            modbusConnection.setPort(502);
+            modbusConnection.connect();
+            System.out.println(getLocalName() + " connected to Modbus simulation.");
+        } catch (Exception e) {
+            System.err.println(getLocalName() + " failed to connect to Modbus.");
+            e.printStackTrace();
+        }
+
+        // --- 2. DF REGISTRATION (The Taxi Stand) ---
+        DFAgentDescription dfd = new DFAgentDescription();
+        dfd.setName(getAID());
+        ServiceDescription sd = new ServiceDescription();
+        sd.setType("transport_service");
+        sd.setName(getLocalName() + "_service");
+        dfd.addServices(sd);
 
         try {
-            // 1. Establish the Modbus Connection
-            InetAddress address = InetAddress.getByName(SIMULATION_IP);
-            modbusConnection = new TCPMasterConnection(address);
-            modbusConnection.setPort(MODBUS_PORT);
-            modbusConnection.connect();
-            System.out.println("Crane successfully connected to the simulation over Modbus TCP.");
-
-            // 2. Add a temporary test behavior to move the crane
-            addBehaviour(new TestMovementBehaviour());
-
-        } catch (Exception e) {
-            System.err.println("Crane failed to connect to Modbus simulation. Is the simulation running?");
-            e.printStackTrace();
-            doDelete(); // Kill the agent if it can't connect to hardware
+            DFService.register(this, dfd);
+        } catch (FIPAException fe) {
+            fe.printStackTrace();
         }
+
+        // --- 3. CONTRACT NET RESPONDER ---
+        MessageTemplate template = MessageTemplate.MatchPerformative(ACLMessage.CFP);
+        addBehaviour(new ContractNetResponder(this, template) {
+
+            @Override
+            protected ACLMessage handleCfp(ACLMessage cfp) throws NotUnderstoodException, RefuseException {
+                // The Part will send its destination in the CFP content
+                String destination = cfp.getContent();
+                System.out.println(getLocalName() + ": Received transport request to " + destination + " from " + cfp.getSender().getLocalName());
+
+                ACLMessage propose = cfp.createReply();
+                propose.setPerformative(ACLMessage.PROPOSE);
+                propose.setContent("10"); // Standard cost
+                return propose;
+            }
+
+            @Override
+            protected ACLMessage handleAcceptProposal(ACLMessage cfp, ACLMessage propose, ACLMessage accept) throws FailureException {
+                String destination = cfp.getContent();
+                System.out.println(getLocalName() + ": Proposal accepted! Moving to " + destination);
+
+                ACLMessage inform = accept.createReply();
+                inform.setPerformative(ACLMessage.INFORM);
+                inform.setContent("Arrived at " + destination);
+
+                // Convert the string destination to an X coordinate
+                int targetX = getCoordinateForDestination(destination);
+
+                // Launch the async behavior to move the hardware
+                myAgent.addBehaviour(new CraneMoveBehaviour(myAgent, 4000, inform, targetX));
+
+                return null; // Handle async
+            }
+        });
     }
 
     @Override
     protected void takeDown() {
-        // Always clean up hardware connections!
+        try { DFService.deregister(this); } catch (FIPAException fe) { fe.printStackTrace(); }
         if (modbusConnection != null && modbusConnection.isConnected()) {
             modbusConnection.close();
-            System.out.println("Modbus connection closed cleanly.");
         }
         System.out.println("Crane Agent shutting down.");
     }
 
+    // --- HARDWARE COORDINATE MAPPER ---
+    private int getCoordinateForDestination(String destination) {
+        switch (destination) {
+            case "source_station_1": return 55;
+            case "source_station_2": return 158;
+            case "processing_station_1": return 450;
+            case "processing_station_2": return 650;
+            case "sink_station": return 945;
+            default: return 0; // Default safe position
+        }
+    }
 
-    // --- Temporary Test Behavior ---
-    private class TestMovementBehaviour extends OneShotBehaviour {
+    // --- ASYNC HARDWARE EXECUTION ---
+    private class CraneMoveBehaviour extends WakerBehaviour {
+        private ACLMessage replyMessage;
+        private int targetX;
+
+        public CraneMoveBehaviour(Agent a, long timeout, ACLMessage reply, int x) {
+            super(a, timeout);
+            this.replyMessage = reply;
+            this.targetX = x;
+
+            // Fire the Modbus movement command immediately
+            moveCrane(targetX);
+        }
+
         @Override
-        public void action() {
+        protected void onWake() {
+            // Once the timeout finishes (assuming travel time), notify the Part
+            System.out.println(getLocalName() + ": Arrived at X:" + targetX + ". Notifying " + replyMessage.getAllReceiver().next());
+            myAgent.send(replyMessage);
+        }
+
+        private void moveCrane(int target) {
             try {
-                // Modbus wire protocol is often 0-based. If the doc says [1], the wire address is 0.
-                int xAxisRegister = 1;
-                int targetPosition = 450;
-
                 WriteSingleRegisterRequest request = new WriteSingleRegisterRequest(
-                        xAxisRegister,
-                        new SimpleRegister(targetPosition)
+                        CRANE_X_REGISTER,
+                        new SimpleRegister(target)
                 );
-
-                // THE FIX: Explicitly set the Unit ID to 1 so the server doesn't reject it as a broadcast
                 request.setUnitID(1);
 
                 ModbusTCPTransaction transaction = new ModbusTCPTransaction(modbusConnection);
                 transaction.setRequest(request);
                 transaction.execute();
-
-                ModbusResponse response = transaction.getResponse();
-
-                if (response != null) {
-                    System.out.println("Success! Crane commanded to move to Process1 (X: " + targetPosition + ")");
-                }
-
             } catch (Exception e) {
-                System.err.println("Failed to execute Modbus transaction.");
-                e.printStackTrace();
+                System.err.println(getLocalName() + " failed to move crane via Modbus.");
             }
         }
     }
