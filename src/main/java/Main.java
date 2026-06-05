@@ -29,10 +29,10 @@ public class Main {
             AgentController source2 = mainContainer.createNewAgent("Source2", "agents.SourceAgent", new Object[0]);
             source2.start();
 
-            // Deploy the two Processes
-            AgentController process1 = mainContainer.createNewAgent("Process1", "agents.ProcessAgent", new Object[0]);
+            // Deploy the two Processes with specific service names
+            AgentController process1 = mainContainer.createNewAgent("Process1", "agents.ProcessAgent", new Object[]{"processing_station_1"});
             process1.start();
-            AgentController process2 = mainContainer.createNewAgent("Process2", "agents.ProcessAgent", new Object[0]);
+            AgentController process2 = mainContainer.createNewAgent("Process2", "agents.ProcessAgent", new Object[]{"processing_station_2"});
             process2.start();
 
             // Deploy the Sink

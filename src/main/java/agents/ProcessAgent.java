@@ -10,14 +10,21 @@ public class ProcessAgent extends Agent {
 
     @Override
     protected void setup() {
-        System.out.println("Process Agent " + getLocalName() + " is ready.");
+        // Read the specific service type from arguments
+        String serviceType = "processing_station"; // Default fallback
+        Object[] args = getArguments();
+        if (args != null && args.length > 0) {
+            serviceType = (String) args[0];
+        }
+
+        System.out.println("Process Agent " + getLocalName() + " is ready. Providing: " + serviceType);
 
         // 1. Create a description for the Yellow Pages
         DFAgentDescription dfd = new DFAgentDescription();
         dfd.setName(getAID());
 
         ServiceDescription sd = new ServiceDescription();
-        sd.setType("processing_station"); // The service type Parts will search for
+        sd.setType(serviceType); // Use the dynamic type!
         sd.setName(getLocalName() + "_service");
         dfd.addServices(sd);
 
