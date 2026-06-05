@@ -1,5 +1,7 @@
 package agents;
 
+import com.ghgande.j2mod.modbus.msg.ReadMultipleRegistersRequest;
+import com.ghgande.j2mod.modbus.msg.ReadMultipleRegistersResponse;
 import jade.core.Agent;
 import jade.domain.DFService;
 import jade.domain.FIPAAgentManagement.DFAgentDescription;
@@ -77,6 +79,24 @@ public class CraneAgent extends Agent {
                 String pickup = route[0];
                 String dropoff = route[1];
 
+                // ---  ERROR HANDLING & SENSOR CHECK ---
+                int sensorReg = -1;
+                if (pickup.equals("source_station_1")) sensorReg = 17;
+                else if (pickup.equals("source_station_2")) sensorReg = 18;
+
+                // If we are picking up from a source, read the physical sensor first!
+                if (sensorReg != -1) {
+                    try {
+                        int isPartPresent = readModbus(sensorReg);
+                        if (isPartPresent == 0) {
+                            System.err.println("\n" + getLocalName() + ": ERROR! No parts generated at " + pickup + "! Aborting movement.");
+                            throw new FailureException("no_part"); // This automatically sends an ACLMessage.FAILURE to the Part
+                        }
+                    } catch (Exception e) {
+                        throw new FailureException("modbus_error");
+                    }
+                }
+
                 System.out.println(getLocalName() + ": Proposal accepted! Executing pick-and-place from " + pickup + " to " + dropoff);
 
                 ACLMessage inform = accept.createReply();
@@ -93,6 +113,16 @@ public class CraneAgent extends Agent {
                 return null;
             }
         });
+    }
+    // --- NEW: MODBUS READ HELPER ---
+    private int readModbus(int register) throws Exception {
+        ReadMultipleRegistersRequest request = new ReadMultipleRegistersRequest(register, 1);
+        request.setUnitID(1);
+        ModbusTCPTransaction transaction = new ModbusTCPTransaction(modbusConnection);
+        transaction.setRequest(request);
+        transaction.execute();
+        ReadMultipleRegistersResponse response = (ReadMultipleRegistersResponse) transaction.getResponse();
+        return response.getRegisterValue(0);
     }
 
     @Override
