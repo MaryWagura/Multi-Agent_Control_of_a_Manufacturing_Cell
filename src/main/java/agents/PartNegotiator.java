@@ -62,11 +62,9 @@ public class PartNegotiator extends ContractNetInitiator {
     protected void handleInform(ACLMessage inform) {
         System.out.println(myAgent.getLocalName() + ": Received completion notice from " + inform.getSender().getLocalName());
 
-        // The negotiation and physical work are totally done!
-        // We cast the generic myAgent back to our specific PartAgent class,
-        // and trigger its public method so it can update its itinerary queue.
+        // Tell the PartAgent the current negotiation (Crane OR Machine) is done
         if (myAgent instanceof PartAgent) {
-            ((PartAgent) myAgent).markServiceComplete();
+            ((PartAgent) myAgent).negotiationFinished();
         }
     }
 }

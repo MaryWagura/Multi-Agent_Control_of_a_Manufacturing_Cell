@@ -19,6 +19,9 @@ public class PartAgent extends Agent {
     private String partType;
     private Queue<String> processPlan; // Acts as the dynamic itinerary for the part
 
+    // Tracks if we have taken the Crane to the current required service yet
+    private boolean isAtDestination = false;
+
     @Override
     protected void setup() {
         // --- INITIALIZATION ---
@@ -53,6 +56,22 @@ public class PartAgent extends Agent {
     @Override
     protected void takeDown() {
         System.out.println("Part Agent [" + getLocalName() + "] has completed its plan and left the system.");
+    }
+
+    // --- NEW STATE MANAGEMENT LOGIC ---
+    public void negotiationFinished() {
+        if (!isAtDestination) {
+            // If we weren't at the destination, it means the Crane just finished dropping us off
+            System.out.println("[" + getLocalName() + "] Successfully transported to destination.");
+            isAtDestination = true; // Flip the flag
+            addBehaviour(new RouteExecutionBehaviour()); // Restart behavior to find the machine
+        } else {
+            // If we were at the destination, the Machine just finished its work
+            processPlan.poll();
+            System.out.println("[" + getLocalName() + "] Service complete. Queue updated. Remaining steps: " + processPlan);
+            isAtDestination = false; // Reset the flag for the NEXT stop in the queue
+            addBehaviour(new RouteExecutionBehaviour()); // Restart behavior to look for the next transport
+        }
     }
 
     // --- STATE MANAGEMENT ---
