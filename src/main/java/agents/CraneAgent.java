@@ -114,6 +114,7 @@ public class CraneAgent extends Agent {
             }
         });
     }
+
     // --- NEW: MODBUS READ HELPER ---
     private int readModbus(int register) throws Exception {
         ReadMultipleRegistersRequest request = new ReadMultipleRegistersRequest(register, 1);
@@ -167,7 +168,8 @@ public class CraneAgent extends Agent {
         transaction.execute();
     }
 
-// --- NEW DYNAMIC PHYSICAL MACRO BEHAVIOUR ---
+    // --- NEW DYNAMIC PHYSICAL MACRO BEHAVIOUR ---
+
     private class CranePickAndPlaceBehaviour extends jade.core.behaviours.OneShotBehaviour {
         private ACLMessage replyMessage;
         private int pickupX, dropoffX;
@@ -189,17 +191,19 @@ public class CraneAgent extends Agent {
                     writeModbus(2, 200);
                     Thread.sleep(1500);
 
-                    // --- DYNAMIC DISTANCE CALCULATION (PICKUP) ---
-                    int distToPickup = Math.abs(pickupX - currentCraneX);
-                    long sleepToPickup = (distToPickup * 10) + 1500; // 10ms per pixel + 1.5s buffer
+                    // --- THE FIX: TRUE CLOSED-LOOP TRACKING ---
+                    // Read the physical location of the crane from Modbus Register 15
+                    int actualStartX = readModbus(15);
 
-                    System.out.println(getLocalName() + ": Moving to pickup X:" + pickupX + " (Waiting " + sleepToPickup + "ms)");
+                    int distToPickup = Math.abs(pickupX - actualStartX);
+                    long sleepToPickup = (distToPickup * 10) + 1500;
+
+                    System.out.println(getLocalName() + ": Moving from actual X:" + actualStartX + " to pickup X:" + pickupX + " (Waiting " + sleepToPickup + "ms)");
                     writeModbus(1, pickupX);
                     Thread.sleep(sleepToPickup);
-                    currentCraneX = pickupX; // Update tracker
 
                     writeModbus(2, 82);
-                    Thread.sleep(1500); // Give it plenty of time to lower
+                    Thread.sleep(1500);
 
                     writeModbus(3, 1);
                     Thread.sleep(500); // Grip
@@ -207,14 +211,13 @@ public class CraneAgent extends Agent {
                     writeModbus(2, 200);
                     Thread.sleep(1500); // Raise
 
-                    // --- DYNAMIC DISTANCE CALCULATION (DROPOFF) ---
-                    int distToDropoff = Math.abs(dropoffX - currentCraneX);
+                    // Now calculate dropoff time based on the pickup location
+                    int distToDropoff = Math.abs(dropoffX - pickupX);
                     long sleepToDropoff = (distToDropoff * 10) + 1500;
 
                     System.out.println(getLocalName() + ": Part secured. Moving to dropoff X:" + dropoffX + " (Waiting " + sleepToDropoff + "ms)");
                     writeModbus(1, dropoffX);
                     Thread.sleep(sleepToDropoff);
-                    currentCraneX = dropoffX; // Update tracker
 
                     writeModbus(2, 82);
                     Thread.sleep(1500);
@@ -232,4 +235,5 @@ public class CraneAgent extends Agent {
                 }
             }).start();
         }
-    }}
+    }
+}
