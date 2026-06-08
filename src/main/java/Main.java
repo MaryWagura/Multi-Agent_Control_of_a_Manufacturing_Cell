@@ -45,27 +45,27 @@ public class Main {
 
             // --- DEPLOY MODULES USING EXTERNAL CONFIGURATIONS ---
 
-            // Deploy Sources (Arg 1: Name, Arg 2: Port, Arg 3: X-Coordinate from JSON)
+            // Deploy Sources (Arg 1: Name, Arg 2: Port, Arg 3: X-Coord, Arg 4: Modbus Sensor Reg)
             AgentController source1 = mainContainer.createNewAgent("Source1", "agents.SourceAgent",
-                    new Object[]{"source_station_1", "8001", layout.get("source_station_1")});
+                    new Object[]{"source_station_1", "8001", layout.get("source_station_1_x"), layout.get("source_station_1_sensor")});
             source1.start();
 
             AgentController source2 = mainContainer.createNewAgent("Source2", "agents.SourceAgent",
-                    new Object[]{"source_station_2", "8002", layout.get("source_station_2")});
+                    new Object[]{"source_station_2", "8002", layout.get("source_station_2_x"), layout.get("source_station_2_sensor")});
             source2.start();
 
-            // Deploy Processes (Arg 1: Name, Arg 2: X-Coordinate from JSON)
+            // Deploy Processes (Arg 1: Name, Arg 2: X-Coord, Arg 3: Modbus Start Reg)
             AgentController process1 = mainContainer.createNewAgent("Process1", "agents.ProcessAgent",
-                    new Object[]{"processing_station_1", layout.get("processing_station_1")});
+                    new Object[]{"processing_station_1", layout.get("processing_station_1_x"), layout.get("processing_station_1_reg")});
             process1.start();
 
             AgentController process2 = mainContainer.createNewAgent("Process2", "agents.ProcessAgent",
-                    new Object[]{"processing_station_2", layout.get("processing_station_2")});
+                    new Object[]{"processing_station_2", layout.get("processing_station_2_x"), layout.get("processing_station_2_reg")});
             process2.start();
 
-            // Deploy Sink (Arg 1: Name, Arg 2: X-Coordinate from JSON)
+            // Deploy Sink (Arg 1: Name, Arg 2: X-Coord, Arg 3: Modbus Reg)
             AgentController sink = mainContainer.createNewAgent("Sink", "agents.SinkAgent",
-                    new Object[]{"sink_station", layout.get("sink_station")});
+                    new Object[]{"sink_station", layout.get("sink_station_x"), layout.get("sink_station_reg")});
             sink.start();
 
             System.out.println("JADE Platform and all static agents started successfully!");
