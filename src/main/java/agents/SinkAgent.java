@@ -13,9 +13,20 @@ import jade.domain.FIPAAgentManagement.RefuseException;
 import jade.domain.FIPAAgentManagement.FailureException;
 
 public class SinkAgent extends Agent {
+    private int startRegister;
+    private String serviceType;
 
     @Override
     protected void setup() {
+        Object[] args = getArguments();
+        serviceType = (String) args[0];
+        String myLocationX = (String) args[1];
+
+        // --- Read the Modbus wire address dynamically from JSON args ---
+        startRegister = Integer.parseInt((String) args[2]);
+
+        System.out.println(getLocalName() + " ready at X:" + myLocationX + " wired to Modbus Reg:" + startRegister);
+
         System.out.println("Sink Agent " + getLocalName() + " is ready.");
 
         // --- DF REGISTRATION ---
@@ -36,9 +47,26 @@ public class SinkAgent extends Agent {
             fe.printStackTrace();
         }
 
-        // TODO for later (Phase 4):
+        // Update the Network Listener to reply with BOTH the X-Coord and the Register separated by a comma
+        jade.lang.acl.MessageTemplate reqTemplate = jade.lang.acl.MessageTemplate.MatchOntology("CONFIG_REQUEST");
+        addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
+            @Override
+            public void action() {
+                jade.lang.acl.ACLMessage msg = myAgent.receive(reqTemplate);
+                if (msg != null) {
+                    jade.lang.acl.ACLMessage reply = msg.createReply();
+                    reply.setPerformative(jade.lang.acl.ACLMessage.INFORM);
+                    reply.setContent(myLocationX + "," + startRegister); // Send "450,4"
+                    myAgent.send(reply);
+                } else {
+                    block();
+                }
+            }
+        });
+
+
         // --- THE CONTRACT NET RESPONDER ---
-        // Create a template so the agent only listens for "Call For Proposal" (CFP) messages
+        // A template so the agent only listens for "Call For Proposal" (CFP) messages
         MessageTemplate template = MessageTemplate.MatchPerformative(ACLMessage.CFP);
 
         addBehaviour(new ContractNetResponder(this, template) {
