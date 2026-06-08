@@ -246,17 +246,26 @@ The system launches with the JADE RMA (Remote Management Agent) console by defau
 
 ### Expected Console Output
 ```
+Successfully loaded factory_layout.json: {source_station_1_x=55, source_station_1_sensor=17, ...}
 Crane Agent Crane is starting up...
 Crane Agent connected to Modbus simulation.
-Source Agent Source1 is ready.
+Source Agent Source1 ready at X:55 wired to Modbus Reg:17
 Source Agent Source1 is listening for AI commands on http://localhost:8001/spawn
-Source Agent Source2 is ready.
+Source Agent Source2 ready at X:158 wired to Modbus Reg:18
 Source Agent Source2 is listening for AI commands on http://localhost:8002/spawn
-Process Agent Process1 is ready.
-Process Agent Process2 is ready.
-Sink Agent Sink is ready.
+Process1 ready at X:450 wired to Modbus Reg:4
+Process1 connected to Modbus simulation.
+Process2 ready at X:650 wired to Modbus Reg:5
+Process2 connected to Modbus simulation.
+Sink ready at X:945 wired to Modbus Reg:0
 JADE Platform and all static agents started successfully!
 ```
+
+**Note:** If factory_layout.json is missing or malformed, you'll see:
+```
+CRITICAL ERROR: Could not read factory_layout.json. java.nio.file.NoSuchFileException
+```
+And startup will abort.
 
 ### Interactive Testing
 Once running, you can trigger the manufacturing process via HTTP:
@@ -608,40 +617,69 @@ modbusConnection.setPort(502);  // Change port here if needed
 
 ## Troubleshooting
 
+### Issue: factory_layout.json Not Found
+**Symptom:** `CRITICAL ERROR: Could not read factory_layout.json`
+
+**Solution:**
+1. Verify `factory_layout.json` exists in project root
+2. Ensure it's not in a subdirectory
+3. Check JSON syntax: `cat factory_layout.json | python -m json.tool`
+4. Verify all required keys are present with correct values
+
 ### Issue: Modbus Connection Failed
-**Symptom:** `CraneAgent failed to connect to Modbus`
+**Symptom:** `CraneAgent failed to connect to Modbus` or `ProcessAgent failed to connect to Modbus`
 
 **Solution:**
 1. Ensure Modbus simulator is running on `localhost:502`
 2. Check firewall rules (port 502 may require sudo)
 3. Verify the simulator is actually listening: `netstat -tuln | grep 502`
-4. If no simulator available, consider disabling Modbus in CraneAgent for testing
+4. If no simulator available, the agents will still initialize (some features will fail gracefully)
+
+### Issue: CONFIG_REQUEST Timeouts
+**Symptom:** `Failed to retrieve config from {station}` or Crane sticks in place
+
+**Solution:**
+1. Verify all agents started successfully (check console output)
+2. Verify factory_layout.json has all required station entries
+3. Check that each agent registered correctly in DF (JADE RMA → Services tab)
+4. If timeout occurs, it may be a network issue (localhost connectivity)
 
 ### Issue: Source Agent HTTP Port Already in Use
 **Symptom:** `Address already in use` on port 8001/8002
 
 **Solution:**
 1. Kill existing Java processes: `pkill -f java`
-2. Change port numbers in `Main.java` to unused ports
-3. Verify ports are available: `netstat -tuln | grep 8001`
+2. Verify ports are available: `netstat -tuln | grep 800{1,2}`
+3. To use different ports, modify Main.java source agent deployment
 
 ### Issue: Parts Not Spawning from API
 **Symptom:** HTTP 500 error when calling `/spawn`
 
 **Solution:**
-1. Verify SourceAgent started: Check console output for "listening for AI commands"
+1. Verify SourceAgent started: Check console for "listening for AI commands"
 2. Check firewall/network: `curl http://localhost:8001/spawn`
 3. Inspect JADE RMA console for agent errors
 4. Ensure correct request format (POST, plain text body)
+5. Verify factory_layout.json is accessible to SourceAgent
 
-### Issue: Parts Stuck in Limbo
-**Symptom:** Parts appear in logs but don't move
+### Issue: Hardware Failure Detection Triggered
+**Symptom:** `ProcessAgent: CRITICAL HARDWARE FAILURE! Halting process`
 
 **Solution:**
-1. Check Directory Facilitator for service registrations (JADE RMA → Agents → Monitor)
+1. This is expected behavior - Modbus register 23 is set to 1 (breakdown button)
+2. Part will receive FAILURE message and can be re-routed
+3. Check if simulator has a breakdown button/register trigger
+4. If spurious, verify Modbus register 23 setup in simulator
+
+### Issue: Parts Stuck in Limbo
+**Symptom:** Parts appear in logs but don't move, services can't be found
+
+**Solution:**
+1. Check Directory Facilitator for service registrations (JADE RMA → Services tab)
 2. Verify all agents are in RUNNING state
-3. Check for FAILURE messages in console output
-4. Restart entire system: `pkill -f java && mvn exec:java -Dexec.mainClass="Main"`
+3. Check for FAILURE or timeout messages in console
+4. Verify factory_layout.json is correctly formatted and all keys match service types
+5. Restart entire system: `pkill -f java && mvn exec:java -Dexec.mainClass="Main"`
 
 ---
 
@@ -663,17 +701,40 @@ modbusConnection.setPort(502);  // Change port here if needed
 
 **Healthy State:**
 ```
+[Part_xxxxxx] Part Agent (Type: type1) has entered the system.
+[Part_xxxxxx] Process plan loaded: [processing_station_1, sink_station]
 [Part_xxxxxx] Needs to go to: processing_station_1. Hailing Crane...
-[Crane] Moving from actual X:55 to pickup X:450
-[Process1] Physical work finished. Notifying Part_xxxxxx
-[Part_xxxxxx] Service complete.
+[Crane] Received transport request to processing_station_1 from Part_xxxxxx
+Crane: Moving from actual X:55 to pickup X:450 (Waiting 4950ms)
+[Part_xxxxxx] Service complete. Queue updated. Remaining steps: [sink_station]
+[Part_xxxxxx] All steps complete! Shutting down.
+```
+
+**CONFIG_REQUEST Protocol (Visible if using JADE message sniffer):**
+```
+[Crane] → [SourceAgent] CONFIG_REQUEST: "Give me your coordinates"
+[SourceAgent] → [Crane] INFORM: "55,17"  (X coordinate, sensor register)
+[Crane] → [ProcessAgent] CONFIG_REQUEST: "Give me your coordinates"
+[ProcessAgent] → [Crane] INFORM: "450,4"  (X coordinate, control register)
+```
+
+**Hardware Failure Detection:**
+```
+Process1: Proposal accepted! Starting physical work...
+Process1: Physical work finished.  ← Normal completion
+
+OR
+
+Process1: Proposal accepted! Starting physical work...
+Process1: CRITICAL HARDWARE FAILURE! Halting process.  ← Reg 23 detected fault
+[Part_xxxxxx] FATAL ERROR: Received failure notice  ← Part notified
 ```
 
 **Problematic State:**
 ```
-[Part_xxxxxx] No provider found. Waiting...       ← Service not registered
-[Crane] ERROR! No parts generated at source_station_1!  ← Sensor issue
-[Part_xxxxxx] FATAL ERROR: Received failure notice  ← Negotiation failed
+[Part_xxxxxx] No provider found. Waiting...          ← Service not registered
+[Crane] ERROR! Sensor at Reg 17 is empty! Aborting. ← Modbus sensor check failed
+[Part_xxxxxx] FATAL ERROR: Received failure notice   ← Service negotiation failed
 ```
 
 ---
@@ -742,7 +803,67 @@ To add custom planning logic:
 
 ---
 
-## Advanced Topics
+## Recent Improvements & New Features
+
+### ⭐ Configuration-Driven Architecture (Latest Update)
+
+This version introduces a **major architectural improvement** moving from hardcoded configuration to externalized, JSON-based setup:
+
+#### Key Improvements:
+
+1. **Externalized Configuration (factory_layout.json)**
+   - Single source of truth for all hardware coordinates and Modbus registers
+   - Change system layout without recompiling code
+   - All station positions and sensor/control registers defined in JSON
+
+2. **Dynamic Configuration Fetching (CONFIG_REQUEST Protocol)**
+   - CraneAgent no longer knows station coordinates in advance
+   - Agents respond to CONFIG_REQUEST by providing their coordinates
+   - Fully decoupled design - stations are plug-and-play
+
+3. **Hardware Failure Detection**
+   - ProcessAgent continuously monitors Modbus register 23 for breakdown signals
+   - Gracefully handles hardware failures with FAILURE messages
+   - Parts can be re-routed on failure
+
+4. **Simplified Agent Arguments**
+   - Agents receive only necessary configuration (no hardcoded values)
+   - Coordinates fetched dynamically at runtime
+   - Future-proof: adding new stations requires only JSON changes
+
+#### Before vs. After:
+
+**Before (Hardcoded):**
+```java
+// In CraneAgent
+int pickup_x = 55;  // Hardcoded - must recompile to change
+if (location.equals("source_station_1")) { pickup_x = 55; }
+else if (location.equals("source_station_2")) { pickup_x = 158; }
+```
+
+**After (Configuration-Driven):**
+```json
+// In factory_layout.json (single edit, no recompile)
+{
+  "source_station_1_x": "55",
+  "source_station_2_x": "158"
+}
+```
+
+```java
+// In CraneAgent
+String[] config = fetchModuleConfig(location);
+int pickup_x = Integer.parseInt(config[0]);  // Fetched at runtime
+```
+
+#### Benefits:
+- ✅ **Scalability** - Add new stations by editing JSON
+- ✅ **Reusability** - Same code works for different factory layouts
+- ✅ **Maintainability** - Configuration separate from code
+- ✅ **Testability** - Easy to create test configurations
+- ✅ **Robustness** - Hardware failure handling built-in
+
+---
 
 ### Adding New Manufacturing Stations
 
@@ -846,7 +967,7 @@ For questions, issues, or suggestions:
 
 ---
 
-**Last Updated:** June 7, 2026
+**Last Updated:** June 8, 2026
 
-**Status:** ✅ Active Development | 🟢 Production Ready | 🔗 LLM Integration Available
+**Status:** ✅ Active Development | 🟢 Production Ready | 🔗 LLM Integration Available | 🎯 Configuration-Driven Architecture
 
