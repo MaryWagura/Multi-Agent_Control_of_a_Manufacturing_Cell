@@ -1,11 +1,12 @@
 {
-  "source_station_1": "55",
-  "source_station_2": "158",
-  "processing_station_1": "450",
-  "processing_station_2": "650",
-  "sink_station": "945"
+  "source_station_1_x": "55",
+  "source_station_1_sensor": "17",
+  "source_station_2_x": "158",
+  "source_station_2_sensor": "18",
+  "processing_station_1_x": "450",
+  "processing_station_1_reg": "4",
+  "processing_station_2_x": "650",
+  "processing_station_2_reg": "5",
+  "sink_station_x": "945",
+  "sink_station_reg": "0"
 }
-
-
-//"source_station_1": "55",
-//"source_station_2": "158",
