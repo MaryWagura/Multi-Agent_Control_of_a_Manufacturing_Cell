@@ -100,13 +100,21 @@ public class ProcessAgent extends Agent {
                         // Start the machine animation using our dynamic register
                         writeModbus(startRegister, 1);
 
-                        // Simulate work taking time
-                        Thread.sleep(4000);
+                        //  ACTIVE HARDWARE POLLING ---
+                        // Check the Modbus sensor every 50ms for 4 seconds (80 loops).
+                        boolean machineFailed = false;
+                        for (int i = 0; i < 80; i++) {
+                            Thread.sleep(50);
 
-                        // --- FAULT TOLERANCE CHECK (Button 1 / Register 23) ---
-                        // If you press Button 1 in the UI during these 4 seconds, this catches it
-                        int isBroken = readModbus(23);
-                        if (isBroken == 1) {
+                            int isBroken = readModbus(23); // Read Button 1
+                            if (isBroken == 1) {
+                                machineFailed = true;
+                                break;
+                            }
+                        }
+
+                        // --- FAULT TOLERANCE CHECK ---
+                        if (machineFailed) {
                             System.err.println(getLocalName() + ": CRITICAL HARDWARE FAILURE! Halting process.");
                             writeModbus(startRegister, 0); // Stop machine animation
 
