@@ -22,14 +22,22 @@ public class SourceAgent extends Agent {
     private HttpServer server;
     private String sourceName;
     private int partCounter = 1; // Keeps track of part IDs
+    private int startRegister;
+    private String serviceType;
 
     @Override
     protected void setup() {
         Object[] args = getArguments();
-        sourceName = (args != null && args.length > 0) ? (String) args[0] : "source_station_1";
+        serviceType = (String) args[0];
+        String myLocationX = (String) args[1];
 
         // Use the second argument as the port number, default to 8001 if missing
         int port = (args != null && args.length > 1) ? Integer.parseInt((String) args[1]) : 8001;
+
+        // --- Read the Modbus wire address dynamically from JSON args ---
+        startRegister = Integer.parseInt((String) args[2]);
+
+        System.out.println(getLocalName() + " ready at X:" + myLocationX + " wired to Modbus Reg:" + startRegister);
 
         System.out.println("Source Agent " + getLocalName() + " is ready.");
 
