@@ -31,17 +31,13 @@ public class ProcessAgent extends Agent {
     protected void setup() {
         // --- 1. CONFIGURATION ---
         Object[] args = getArguments();
-        serviceType = (args != null && args.length > 0) ? (String) args[0] : "processing_station_1";
+        serviceType = (String) args[0];
+        String myLocationX = (String) args[1];
 
-        // Map the correct Modbus wire address based on the agent's identity
-        // Address 4 -> Wire 3. Address 5 -> Wire 4.
-        if (serviceType.equals("processing_station_1")) {
-            startRegister = 4;
-        } else if (serviceType.equals("processing_station_2")) {
-            startRegister = 5;
-        }
+        //--- Read the Modbus wire address dynamically from JSON args ---
+        startRegister = Integer.parseInt((String) args[2]);
 
-        System.out.println("Process Agent " + getLocalName() + " starting up. Target Register: " + startRegister);
+        System.out.println(getLocalName() + " ready at X:" + myLocationX + " wired to Modbus Reg:" + startRegister);
 
         // --- 2. MODBUS CONNECTION ---
         try {
@@ -68,6 +64,23 @@ public class ProcessAgent extends Agent {
         } catch (FIPAException fe) {
             fe.printStackTrace();
         }
+
+        // Update the Network Listener to reply with BOTH the X-Coord and the Register separated by a comma
+        jade.lang.acl.MessageTemplate reqTemplate = jade.lang.acl.MessageTemplate.MatchOntology("CONFIG_REQUEST");
+        addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
+            @Override
+            public void action() {
+                jade.lang.acl.ACLMessage msg = myAgent.receive(reqTemplate);
+                if (msg != null) {
+                    jade.lang.acl.ACLMessage reply = msg.createReply();
+                    reply.setPerformative(jade.lang.acl.ACLMessage.INFORM);
+                    reply.setContent(myLocationX + "," + startRegister); // Send "450,4"
+                    myAgent.send(reply);
+                } else {
+                    block();
+                }
+            }
+        });
 
         // --- 4. CONTRACT NET RESPONDER ---
         MessageTemplate template = MessageTemplate.MatchPerformative(ACLMessage.CFP);
