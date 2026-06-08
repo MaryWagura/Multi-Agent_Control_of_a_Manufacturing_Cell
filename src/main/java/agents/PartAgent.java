@@ -99,14 +99,14 @@ public class PartAgent extends Agent {
                         return;
                     }
 
-                    // Peek at (but do not remove) the next required service
+                    // Peek at  the next required service
                     neededService = processPlan.peek();
 
                     // Build a search template for the DF Yellow Pages
                     DFAgentDescription template = new DFAgentDescription();
                     ServiceDescription sd = new ServiceDescription();
 
-                    // THE CRANE FIX: Determine if we need a taxi or a machine
+                    //  Determine if we need a taxi or a machine
                     if (!isAtDestination) {
                         // We need a ride. Ask the DF for the transport service.
                         System.out.println("\n[" + getLocalName() + "] Needs to go to: " + neededService + ". Hailing Crane...");
@@ -143,7 +143,7 @@ public class PartAgent extends Agent {
                     ACLMessage cfp = new ACLMessage(ACLMessage.CFP);
                     cfp.addReceiver(targetProvider); // Address it to the machine or crane we just found
 
-                    // 2. SET THE CONTENT (THIS IS THE UPDATED PART!)
+                    // 2. SET THE CONTENT
                     // If we are talking to the Crane, send "PickupLocation,DropoffLocation".
                     // Otherwise (talking to a machine), just send "DropoffLocation".
                     if (!isAtDestination) {
