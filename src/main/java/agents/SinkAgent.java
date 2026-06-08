@@ -27,15 +27,13 @@ public class SinkAgent extends Agent {
 
         System.out.println(getLocalName() + " ready at X:" + myLocationX + " wired to Modbus Reg:" + startRegister);
 
-        System.out.println("Sink Agent " + getLocalName() + " is ready.");
-
         // --- DF REGISTRATION ---
         DFAgentDescription dfd = new DFAgentDescription();
         dfd.setName(getAID());
 
         ServiceDescription sd = new ServiceDescription();
-        // The service type is what Part agents will query when they reach the end of their route
-        sd.setType("sink_station");
+        // FIX: Use the dynamic variable, never hardcode!
+        sd.setType(serviceType);
         sd.setName(getLocalName() + "_service");
         dfd.addServices(sd);
 
@@ -43,11 +41,10 @@ public class SinkAgent extends Agent {
             DFService.register(this, dfd);
             System.out.println(getLocalName() + " registered successfully with the DF.");
         } catch (FIPAException fe) {
-            System.err.println("Error registering " + getLocalName() + " with the DF.");
             fe.printStackTrace();
         }
 
-        // Update the Network Listener to reply with BOTH the X-Coord and the Register separated by a comma
+        // --- CONFIG LISTENER (For the Crane) ---
         jade.lang.acl.MessageTemplate reqTemplate = jade.lang.acl.MessageTemplate.MatchOntology("CONFIG_REQUEST");
         addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
             @Override
@@ -56,7 +53,7 @@ public class SinkAgent extends Agent {
                 if (msg != null) {
                     jade.lang.acl.ACLMessage reply = msg.createReply();
                     reply.setPerformative(jade.lang.acl.ACLMessage.INFORM);
-                    reply.setContent(myLocationX + "," + startRegister); // Send "450,4"
+                    reply.setContent(myLocationX + "," + startRegister);
                     myAgent.send(reply);
                 } else {
                     block();
@@ -64,35 +61,25 @@ public class SinkAgent extends Agent {
             }
         });
 
-
         // --- THE CONTRACT NET RESPONDER ---
-        // A template so the agent only listens for "Call For Proposal" (CFP) messages
         MessageTemplate template = MessageTemplate.MatchPerformative(ACLMessage.CFP);
-
         addBehaviour(new ContractNetResponder(this, template) {
             @Override
             protected ACLMessage handleCfp(ACLMessage cfp) throws NotUnderstoodException, RefuseException {
-                System.out.println(getLocalName() + ": Received CFP for a job from " + cfp.getSender().getLocalName());
-
-                // We are available, so we formulate a proposal to do the job
                 ACLMessage propose = cfp.createReply();
                 propose.setPerformative(ACLMessage.PROPOSE);
-                propose.setContent("10"); // We propose an arbitrary "cost" or "time" of 10
+                propose.setContent("10");
                 return propose;
             }
 
             @Override
             protected ACLMessage handleAcceptProposal(ACLMessage cfp, ACLMessage propose, ACLMessage accept) throws FailureException {
-                System.out.println(getLocalName() + ": Proposal accepted! Starting work for " + accept.getSender().getLocalName());
+                System.out.println(getLocalName() + ": Part arrived. Consuming part " + accept.getSender().getLocalName());
 
-                // TODO later: This is where Process1/Process2 will send the Modbus TCP signal
-                // to the simulation to physically run the machine!
-
-                // For now, we simulate the work instantly finishing and inform the Part
+                // The Sink usually just deletes/swallows the part, so we send INFORM instantly.
                 ACLMessage inform = accept.createReply();
                 inform.setPerformative(ACLMessage.INFORM);
                 inform.setContent("Process completed");
-                System.out.println(getLocalName() + ": Work finished. Notifying " + accept.getSender().getLocalName());
                 return inform;
             }
         });
@@ -100,14 +87,7 @@ public class SinkAgent extends Agent {
 
     @Override
     protected void takeDown() {
-        // --- CLEANUP ---
-        // Remove the agent from the Yellow Pages before terminating the thread
-        try {
-            DFService.deregister(this);
-            System.out.println(getLocalName() + " deregistered from the DF.");
-        } catch (FIPAException fe) {
-            fe.printStackTrace();
-        }
+        try { DFService.deregister(this); } catch (FIPAException fe) { fe.printStackTrace(); }
         System.out.println("Sink Agent " + getAID().getName() + " shutting down.");
     }
 }

@@ -1,8 +1,6 @@
 package agents;
 
 import jade.core.Agent;
-import jade.core.AID;
-import jade.core.behaviours.WakerBehaviour;
 import jade.domain.DFService;
 import jade.domain.FIPAAgentManagement.DFAgentDescription;
 import jade.domain.FIPAAgentManagement.ServiceDescription;
@@ -18,13 +16,15 @@ import jade.domain.FIPAAgentManagement.FailureException;
 import com.ghgande.j2mod.modbus.net.TCPMasterConnection;
 import com.ghgande.j2mod.modbus.io.ModbusTCPTransaction;
 import com.ghgande.j2mod.modbus.msg.WriteSingleRegisterRequest;
+import com.ghgande.j2mod.modbus.msg.ReadMultipleRegistersRequest;
+import com.ghgande.j2mod.modbus.msg.ReadMultipleRegistersResponse;
 import com.ghgande.j2mod.modbus.procimg.SimpleRegister;
 import java.net.InetAddress;
 
 public class ProcessAgent extends Agent {
 
     private TCPMasterConnection modbusConnection;
-    private int startRegister; // The Modbus wire address to trigger this specific machine
+    private int startRegister; // Dynamically injected Modbus address
     private String serviceType;
 
     @Override
@@ -43,7 +43,7 @@ public class ProcessAgent extends Agent {
         try {
             InetAddress address = InetAddress.getByName("127.0.0.1");
             modbusConnection = new TCPMasterConnection(address);
-            modbusConnection.setPort(502); // Make sure your simulation is running with sudo!
+            modbusConnection.setPort(502);
             modbusConnection.connect();
             System.out.println(getLocalName() + " connected to Modbus simulation.");
         } catch (Exception e) {
@@ -59,13 +59,9 @@ public class ProcessAgent extends Agent {
         sd.setName(getLocalName() + "_service");
         dfd.addServices(sd);
 
-        try {
-            DFService.register(this, dfd);
-        } catch (FIPAException fe) {
-            fe.printStackTrace();
-        }
+        try { DFService.register(this, dfd); } catch (FIPAException fe) { fe.printStackTrace(); }
 
-        // Update the Network Listener to reply with BOTH the X-Coord and the Register separated by a comma
+        // --- 4. CONFIG LISTENER (For the Crane) ---
         jade.lang.acl.MessageTemplate reqTemplate = jade.lang.acl.MessageTemplate.MatchOntology("CONFIG_REQUEST");
         addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
             @Override
@@ -74,7 +70,7 @@ public class ProcessAgent extends Agent {
                 if (msg != null) {
                     jade.lang.acl.ACLMessage reply = msg.createReply();
                     reply.setPerformative(jade.lang.acl.ACLMessage.INFORM);
-                    reply.setContent(myLocationX + "," + startRegister); // Send "450,4"
+                    reply.setContent(myLocationX + "," + startRegister);
                     myAgent.send(reply);
                 } else {
                     block();
@@ -82,13 +78,12 @@ public class ProcessAgent extends Agent {
             }
         });
 
-        // --- 4. CONTRACT NET RESPONDER ---
+        // --- 5. CONTRACT NET RESPONDER ---
         MessageTemplate template = MessageTemplate.MatchPerformative(ACLMessage.CFP);
         addBehaviour(new ContractNetResponder(this, template) {
 
             @Override
             protected ACLMessage handleCfp(ACLMessage cfp) throws NotUnderstoodException, RefuseException {
-                // We are idle, so we agree to do the job
                 ACLMessage propose = cfp.createReply();
                 propose.setPerformative(ACLMessage.PROPOSE);
                 propose.setContent("10");
@@ -97,18 +92,47 @@ public class ProcessAgent extends Agent {
 
             @Override
             protected ACLMessage handleAcceptProposal(ACLMessage cfp, ACLMessage propose, ACLMessage accept) throws FailureException {
-                System.out.println(getLocalName() + ": Proposal accepted! Starting physical work for " + accept.getSender().getLocalName());
+                System.out.println(getLocalName() + ": Proposal accepted! Starting physical work...");
 
-                // Prepare the completion message, but DO NOT send it yet.
-                ACLMessage inform = accept.createReply();
-                inform.setPerformative(ACLMessage.INFORM);
-                inform.setContent("Process completed");
+                // Execute the physical work in a thread so we can monitor the breakdown button
+                new Thread(() -> {
+                    try {
+                        // Start the machine animation using our dynamic register
+                        writeModbus(startRegister, 1);
 
-                // Launch a separate behavior to talk to the hardware
-                myAgent.addBehaviour(new MachineWorkerBehaviour(myAgent, 3000, inform));
+                        // Simulate work taking time
+                        Thread.sleep(4000);
 
-                // Return null to tell JADE protocol: "I am handling the reply asynchronously."
-                return null;
+                        // --- FAULT TOLERANCE CHECK (Button 1 / Register 23) ---
+                        // If you press Button 1 in the UI during these 4 seconds, this catches it
+                        int isBroken = readModbus(23);
+                        if (isBroken == 1) {
+                            System.err.println(getLocalName() + ": CRITICAL HARDWARE FAILURE! Halting process.");
+                            writeModbus(startRegister, 0); // Stop machine animation
+
+                            // Send a FAILURE message to the Part so it triggers its re-route protocol!
+                            ACLMessage failureMsg = accept.createReply();
+                            failureMsg.setPerformative(ACLMessage.FAILURE);
+                            failureMsg.setContent("hardware_breakdown");
+                            myAgent.send(failureMsg);
+                            return; // Exit the thread
+                        }
+
+                        // Normal completion if nothing broke
+                        writeModbus(startRegister, 0); // Stop animation
+                        System.out.println(getLocalName() + ": Physical work finished.");
+
+                        ACLMessage inform = accept.createReply();
+                        inform.setPerformative(ACLMessage.INFORM);
+                        inform.setContent("Process completed");
+                        myAgent.send(inform);
+
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }).start();
+
+                return null; // Asynchronous reply
             }
         });
     }
@@ -122,44 +146,27 @@ public class ProcessAgent extends Agent {
         System.out.println("Process Agent " + getAID().getName() + " shutting down.");
     }
 
-    // --- THE HARDWARE EXECUTION ENGINE ---
-    private class MachineWorkerBehaviour extends WakerBehaviour {
-        private ACLMessage replyMessage;
+    // --- MODBUS HELPER METHODS ---
 
-        // WakerBehaviour executes exactly once after the specified timeout (in milliseconds)
-        public MachineWorkerBehaviour(Agent a, long timeout, ACLMessage reply) {
-            super(a, timeout);
-            this.replyMessage = reply;
+    private void writeModbus(int register, int command) throws Exception {
+        WriteSingleRegisterRequest request = new WriteSingleRegisterRequest(register, new SimpleRegister(command));
+        request.setUnitID(1);
+        ModbusTCPTransaction transaction = new ModbusTCPTransaction(modbusConnection);
+        transaction.setRequest(request);
+        transaction.execute();
+    }
 
-            // Fire the Modbus start command immediately when this behavior is created
-            triggerMachine(1);
-        }
+    private int readModbus(int register) throws Exception {
+        // Changed "Holding" to "Multiple" here
+        ReadMultipleRegistersRequest request = new ReadMultipleRegistersRequest(register, 1);
+        request.setUnitID(1);
 
-        @Override
-        protected void onWake() {
-            // This runs after the timeout (e.g., 3 seconds later)
-            // Reset the machine register back to 0
-            triggerMachine(0);
+        ModbusTCPTransaction transaction = new ModbusTCPTransaction(modbusConnection);
+        transaction.setRequest(request);
+        transaction.execute();
 
-            // Now formally notify the Part that we are done
-            System.out.println(getLocalName() + ": Physical work finished. Notifying " + replyMessage.getAllReceiver().next());
-            myAgent.send(replyMessage);
-        }
-
-        private void triggerMachine(int command) {
-            try {
-                WriteSingleRegisterRequest request = new WriteSingleRegisterRequest(
-                        startRegister,
-                        new SimpleRegister(command) // Write 1 to start, 0 to reset
-                );
-                request.setUnitID(1); // Crucial for j2mod routing
-
-                ModbusTCPTransaction transaction = new ModbusTCPTransaction(modbusConnection);
-                transaction.setRequest(request);
-                transaction.execute();
-            } catch (Exception e) {
-                System.err.println(getLocalName() + " failed to send Modbus command.");
-            }
-        }
+        // Changed "Holding" to "Multiple" here as well
+        ReadMultipleRegistersResponse response = (ReadMultipleRegistersResponse) transaction.getResponse();
+        return response.getRegister(0).getValue();
     }
 }

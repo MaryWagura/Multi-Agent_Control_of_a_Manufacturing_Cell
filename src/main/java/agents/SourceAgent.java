@@ -20,32 +20,27 @@ import java.net.InetSocketAddress;
 public class SourceAgent extends Agent {
 
     private HttpServer server;
-    private String sourceName;
-    private int partCounter = 1; // Keeps track of part IDs
+    private int partCounter = 1;
     private int startRegister;
     private String serviceType;
 
     @Override
     protected void setup() {
         Object[] args = getArguments();
-        serviceType = (String) args[0];
-        String myLocationX = (String) args[1];
 
-        // Use the second argument as the port number, default to 8001 if missing
-        int port = (args != null && args.length > 1) ? Integer.parseInt((String) args[1]) : 8001;
-
-        // --- Read the Modbus wire address dynamically from JSON args ---
-        startRegister = Integer.parseInt((String) args[2]);
+        // --- PROPERLY PARSE ALL 4 ARGUMENTS FROM MAIN.JAVA ---
+        serviceType = (String) args[0];                     // e.g., "source_station_1"
+        int port = Integer.parseInt((String) args[1]);      // e.g., 8001
+        String myLocationX = (String) args[2];              // e.g., "55"
+        startRegister = Integer.parseInt((String) args[3]); // e.g., 17
 
         System.out.println(getLocalName() + " ready at X:" + myLocationX + " wired to Modbus Reg:" + startRegister);
-
-        System.out.println("Source Agent " + getLocalName() + " is ready.");
 
         // --- 1. DF REGISTRATION ---
         DFAgentDescription dfd = new DFAgentDescription();
         dfd.setName(getAID());
         ServiceDescription sd = new ServiceDescription();
-        sd.setType(sourceName);
+        sd.setType(serviceType); // FIX: Use serviceType instead of the null sourceName
         sd.setName(getLocalName() + "_service");
         dfd.addServices(sd);
 
@@ -55,14 +50,15 @@ public class SourceAgent extends Agent {
         try {
             server = HttpServer.create(new InetSocketAddress(port), 0);
             server.createContext("/spawn", new SpawnHandler());
-            server.setExecutor(null); // Use the default executor
+            server.setExecutor(null);
             server.start();
             System.out.println(getLocalName() + " is listening for AI commands on http://localhost:" + port + "/spawn");
         } catch (IOException e) {
             System.err.println(getLocalName() + " failed to start HTTP server.");
             e.printStackTrace();
         }
-        // Update the Network Listener to reply with BOTH the X-Coord and the Register separated by a comma
+
+        // --- 3. CONFIG LISTENER (For the Crane) ---
         jade.lang.acl.MessageTemplate reqTemplate = jade.lang.acl.MessageTemplate.MatchOntology("CONFIG_REQUEST");
         addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
             @Override
@@ -71,7 +67,7 @@ public class SourceAgent extends Agent {
                 if (msg != null) {
                     jade.lang.acl.ACLMessage reply = msg.createReply();
                     reply.setPerformative(jade.lang.acl.ACLMessage.INFORM);
-                    reply.setContent(myLocationX + "," + startRegister); // Send "450,4"
+                    reply.setContent(myLocationX + "," + startRegister);
                     myAgent.send(reply);
                 } else {
                     block();
@@ -79,8 +75,6 @@ public class SourceAgent extends Agent {
             }
         });
     }
-
-
 
     @Override
     protected void takeDown() {
@@ -103,7 +97,6 @@ public class SourceAgent extends Agent {
                 int statusCode = 200;
 
                 try {
-                    // THE FIX: Guarantee a completely unique name using the timestamp
                     String uniqueID = String.valueOf(System.currentTimeMillis()).substring(8);
                     String agentName = "Part_" + uniqueID;
 
@@ -111,7 +104,8 @@ public class SourceAgent extends Agent {
                     AgentController part = cc.createNewAgent(agentName, "agents.PartAgent", new Object[]{body});
                     part.start();
 
-                    response = "SUCCESS: Spawned " + agentName + " of type " + body + " from " + sourceName;
+                    // FIX: Use serviceType here as well
+                    response = "SUCCESS: Spawned " + agentName + " of type " + body + " from " + serviceType;
                     System.out.println("\n[" + getLocalName() + "] API TRIGGERED! Injecting " + agentName + " (" + body + ") into the JADE platform.");
                 } catch (Exception e) {
                     response = "ERROR: Failed to spawn part - " + e.getMessage();
