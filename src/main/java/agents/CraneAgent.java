@@ -111,24 +111,6 @@ public class CraneAgent extends Agent {
         System.out.println("Crane Agent shutting down.");
     }
 
-    // --- HARDWARE COORDINATE MAPPER ---
-    // Moved to the main class scope so the setup() method can see it
-    private int getCoordinateForDestination(String destination) {
-        switch (destination) {
-            case "source_station_1":
-                return 55;
-            case "source_station_2":
-                return 158;
-            case "processing_station_1":
-                return 450;
-            case "processing_station_2":
-                return 650;
-            case "sink_station":
-                return 945;
-            default:
-                return 0; // Default safe position
-        }
-    }
 
     // --- MODBUS WRITER HELPER ---
     // Moved to main class scope so any behavior can use it cleanly

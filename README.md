@@ -45,7 +45,25 @@ Part Agent   Crane Agent         Process Agent         Crane Agent    Sink Agent
              (Contract Net)       (Modbus TCP)          (Modbus TCP)
 ```
 
-### Agent Communication Pattern (FIPA Contract Net Protocol)
+### Configuration-Driven Architecture
+
+The system now uses **externalized configuration** via `factory_layout.json`:
+- All station coordinates and Modbus registers are **centralized in JSON**
+- Agents dynamically fetch configuration at runtime via **CONFIG_REQUEST protocol**
+- **Decoupled design** - CraneAgent queries each source/destination for coordinates
+- **Configuration-driven discovery** - No hardcoded coordinates or registers
+
+```
+factory_layout.json (Single Source of Truth)
+    ↓
+[Agents read on startup]
+    ↓
+[CONFIG_REQUEST protocol for dynamic lookups]
+    ↓
+[Crane/Agents fetch coordinates as needed]
+```
+
+### Agent Communication Pattern (FIPA Contract Net + CONFIG_REQUEST)
 
 ```
 1. Part Agent (Initiator)
@@ -54,9 +72,10 @@ Part Agent   Crane Agent         Process Agent         Crane Agent    Sink Agent
            └─→ PROPOSE
                └─→ Part Agent
                    └─→ ACCEPT_PROPOSAL
-                       └─→ [Execute Physical Action]
-                           └─→ INFORM (Completion)
-                               └─→ Part Agent
+                       └─→ [CONFIG_REQUEST exchanges for dynamic coordinates]
+                           └─→ [Execute Physical Action with fetched config]
+                               └─→ INFORM (Completion)
+                                   └─→ Part Agent
 ```
 
 ---
@@ -106,14 +125,15 @@ Part Agent   Crane Agent         Process Agent         Crane Agent    Sink Agent
 ```
 Multi-Agent_Control_of_a_Manufacturing_Cell/
 ├── pom.xml                          # Maven project configuration
+├── factory_layout.json              # ⭐ NEW: Centralized configuration (coordinates & Modbus registers)
 ├── src/
 │   ├── main/
 │   │   ├── java/
-│   │   │   ├── Main.java           # System entry point & agent initialization
+│   │   │   ├── Main.java           # System entry point & JSON-based agent initialization
 │   │   │   └── agents/
-│   │   │       ├── CraneAgent.java          # Transport coordinator & hardware interface
-│   │   │       ├── SourceAgent.java         # Part spawning point with HTTP listener
-│   │   │       ├── ProcessAgent.java        # Machine controller & Modbus interface
+│   │   │       ├── CraneAgent.java          # Transport coordinator (dynamic config fetching)
+│   │   │       ├── SourceAgent.java         # Part spawning (config listener pattern)
+│   │   │       ├── ProcessAgent.java        # Machine controller (hardware failure detection)
 │   │   │       ├── SinkAgent.java           # Terminal delivery point
 │   │   │       ├── PartAgent.java           # Individual part entity & router
 │   │   │       └── PartNegotiator.java      # Contract Net protocol handler
@@ -173,18 +193,38 @@ This command:
 mvn compile
 ```
 
-### Step 4: (Optional) Set Up Modbus Simulator
+### Step 4: Configure factory_layout.json
+Before running, verify `factory_layout.json` contains your manufacturing cell layout:
+```json
+{
+  "source_station_1_x": "55",
+  "source_station_1_sensor": "17",
+  "source_station_2_x": "158",
+  "source_station_2_sensor": "18",
+  "processing_station_1_x": "450",
+  "processing_station_1_reg": "4",
+  "processing_station_2_x": "650",
+  "processing_station_2_reg": "5",
+  "sink_station_x": "945",
+  "sink_station_reg": "0"
+}
+```
+- **Coordinates** (X values) - Crane movement targets in units
+- **Sensor registers** - Modbus registers for part presence detection
+- **Control registers** - Modbus registers for machine/station operations
+
+### Step 5: (Optional) Set Up Modbus Simulator
 If you have a Modbus TCP simulator:
 ```bash
 # Example with OpenPLC (if available)
 # Configure it to listen on 127.0.0.1:502
-# Set up the following registers:
-# Register 1: Crane X position
-# Register 2: Crane Z (height) position
-# Register 3: Crane gripper state
-# Register 4-5: Processing station commands
-# Register 15: Crane actual X position
-# Register 17-18: Source station sensors
+# Set up the following registers as defined in factory_layout.json:
+# Register 4: Process Station 1 control
+# Register 5: Process Station 2 control
+# Register 15: Crane actual X position (feedback)
+# Register 17: Source Station 1 sensor (part present)
+# Register 18: Source Station 2 sensor (part present)
+# Register 23: Hardware breakdown button (fault detection)
 ```
 
 ---
@@ -233,151 +273,153 @@ curl -X POST http://localhost:8002/spawn -d "type2"
 ## Agent Descriptions
 
 ### 🚀 **Main.java** - System Bootstrap
-**Responsibility:** Initialize the JADE platform and deploy all static agents
+**Responsibility:** Initialize the JADE platform and deploy all static agents using external configuration
 
 **Key Functions:**
+- Reads `factory_layout.json` for all station coordinates and Modbus registers
 - Creates JADE runtime and main container
-- Deploys 6 core agents (1 Crane, 2 Sources, 2 Processes, 1 Sink)
-- Configures HTTP listener ports for dynamic part spawning
+- Deploys 6 core agents with **dynamic configuration from JSON**:
+  - Crane (no args - fetches config from other agents on demand)
+  - 2 Source agents (serviceType, port, X-coord, sensor register)
+  - 2 Process agents (serviceType, X-coord, control register)
+  - 1 Sink agent (serviceType, X-coord, control register)
 - Enables JADE RMA GUI for monitoring
 
-**Configuration:**
+**Configuration Pattern:**
 ```java
-// Profile settings in Main.java
-profile.setParameter(Profile.MAIN_HOST, "localhost");
-profile.setParameter(Profile.GUI, "true");  // GUI console enabled
+// Reads JSON once at startup
+Map<String, String> layout = /* parsed from factory_layout.json */;
+
+// Deploy agents with externalized config
+AgentController source1 = mainContainer.createNewAgent("Source1", "agents.SourceAgent",
+    new Object[]{"source_station_1", "8001", layout.get("source_station_1_x"), layout.get("source_station_1_sensor")});
 ```
 
 ---
 
-### 🦾 **CraneAgent.java** - Material Handling System
-**Responsibility:** Autonomously transport parts between stations using the robotic crane
+### 🦾 **CraneAgent.java** - Material Handling System (Dynamically Configured)
+**Responsibility:** Autonomously transport parts between stations using runtime-fetched configuration
 
 **Key Capabilities:**
 - **Service Registration:** Registers as `transport_service` in the Directory Facilitator
 - **Contract Net Responder:** Listens for part transportation requests (CFPs)
+- **Dynamic Configuration Fetching:** Sends CONFIG_REQUEST to each station to get coordinates
 - **Modbus Integration:** Commands physical crane via Modbus TCP
 - **Sensor Validation:** Reads source station sensors before pickup
-- **Position Tracking:** Maintains closed-loop crane X-Y-Z position control
+- **Closed-loop Position Tracking:** Validates actual physical position from Modbus register 15
 
 **Workflow:**
 1. Receives CFP: `{pickup_location},{dropoff_location}`
-2. Validates physical sensor (if at source)
-3. Calculates movement distances
-4. Executes Modbus commands:
+2. **Fetches coordinates dynamically** via CONFIG_REQUEST protocol:
+   - Queries source station for pickup X-coordinate
+   - Queries destination station for dropoff X-coordinate
+3. Validates physical sensor (if at source)
+4. Executes Modbus commands with fetched coordinates:
    - Raise gripper to safe height (Z=200)
    - Move to pickup location (X coordinate)
    - Lower and grip (Z=82, grip=1)
    - Move to dropoff location
    - Release and retract
-5. Sends INFORM completion message with estimated route
+5. Sends INFORM completion message
 
-**Hardware Mapping:**
-| Location | X Coordinate |
-|----------|-------------|
-| source_station_1 | 55 |
-| source_station_2 | 158 |
-| processing_station_1 | 450 |
-| processing_station_2 | 650 |
-| sink_station | 945 |
+**Dynamic Coordinate Fetching (CranePickAndPlaceBehaviour):**
+```
+[Crane receives: "source_station_1,processing_station_1"]
+    ↓
+[Sends CONFIG_REQUEST to "source_station_1"]
+    ↓
+[Receives "55,17" (X coord, sensor register)]
+    ↓
+[Sends CONFIG_REQUEST to "processing_station_1"]
+    ↓
+[Receives "450,4" (X coord, control register)]
+    ↓
+[Executes move with actual coordinates]
+```
 
-**Modbus Registers:**
+**Modbus Registers (Read from factory_layout.json):**
 | Register | Function |
 |----------|----------|
 | 1 | Crane X position command |
 | 2 | Crane Z (height) position |
 | 3 | Gripper state (0=open, 1=grip) |
 | 15 | Crane actual X position (feedback) |
-| 17 | Source 1 sensor (part present) |
-| 18 | Source 2 sensor (part present) |
+| 17+ | Source/Station sensors (from config) |
 
 ---
 
-### 📦 **SourceAgent.java** - Part Entry Point
-**Responsibility:** Serve as spawn point for manufactured parts entering the system
+### 📦 **SourceAgent.java** - Part Entry Point (Configuration Listener)
+**Responsibility:** Serve as spawn point with dynamic configuration capabilities
 
 **Key Capabilities:**
 - **HTTP Server:** Exposes REST API on configurable port (8001, 8002)
-- **Service Registration:** Registers as `source_station_1` or `source_station_2`
+- **Service Registration:** Registers with name from `factory_layout.json`
+- **CONFIG_REQUEST Listener:** Responds to CraneAgent coordinate queries with (X, SensorReg)
 - **Dynamic Part Creation:** Spawns PartAgent instances on HTTP request
-- **Unique Naming:** Generates timestamp-based unique IDs for parts
 
-**HTTP API Endpoints:**
-```
-POST /spawn
-Content-Type: application/octet-stream
-Body: {part_type}
-
-Responses:
-200 OK   - "SUCCESS: Spawned Part_xxxxx of type {type} from source_station_1"
-500 ERROR - "ERROR: Failed to spawn part - {reason}"
-```
-
-**Arguments at Initialization:**
+**Configuration Pattern (from Main.java):**
 ```java
-// Defined in Main.java
-new Object[]{"source_station_1", "8001"}  // agentName, port
-new Object[]{"source_station_2", "8002"}
+new Object[]{"source_station_1", "8001", "55", "17"}
+// Meaning: This station responds to CONFIG_REQUEST with "55,17"
 ```
 
-**Example Usage:**
-```bash
-# Spawn type1 part
-curl -X POST http://localhost:8001/spawn -d "type1"
-
-# Spawn type2 part with complex routing
-curl -X POST http://localhost:8002/spawn -d "type2"
+**Behavior:** When Crane sends CONFIG_REQUEST:
+```
+Crane: "Give me your config for source_station_1"
+SourceAgent: "INFORM: 55,17" (X-coordinate, sensor register)
 ```
 
 ---
 
-### ⚙️ **ProcessAgent.java** - Manufacturing Station
-**Responsibility:** Execute processing tasks on parts using physical machinery
+### ⚙️ **ProcessAgent.java** - Manufacturing Station (Config Listener + Fault Detection)
+**Responsibility:** Execute processing tasks with dynamic configuration and hardware failure monitoring
 
 **Key Capabilities:**
-- **Service Registration:** Registers as `processing_station_1` or `processing_station_2`
-- **Contract Net Responder:** Negotiates machine availability
-- **Modbus Control:** Triggers physical processing via Modbus registers
+- **Service Registration:** Registers with name from `factory_layout.json`
+- **CONTRACT Net Responder:** Negotiates machine availability
+- **CONFIG_REQUEST Listener:** Responds to CraneAgent queries with (X, ControlReg)
+- **Modbus Control:** Triggers physical processing via assigned Modbus register
+- **Hardware Failure Detection:** Monitors Modbus register 23 for breakdown signals
 - **Async Processing:** Non-blocking execution with delayed completion notification
 
 **Workflow:**
 1. Receives CFP from PartAgent
-2. Immediately sends PROPOSE (always available initially)
+2. Immediately sends PROPOSE
 3. Upon ACCEPT_PROPOSAL:
    - Writes `1` to assigned Modbus register to START processing
-   - Launches WakerBehaviour (3-second timer)
-   - After 3 seconds, writes `0` to STOP processing
+   - **Actively polls register 23 every 50ms for hardware failures**
+   - If breakdown detected → sends FAILURE message
+   - Otherwise waits 4 seconds, writes `0` to STOP
    - Sends INFORM completion message
 
-**Configuration:**
+**Configuration Pattern (from Main.java):**
 ```java
-// Modbus register mapping (in setup())
-processing_station_1 → Register 4
-processing_station_2 → Register 5
+new Object[]{"processing_station_1", "450", "4"}
+// Meaning: This station responds to CONFIG_REQUEST with "450,4" (X-coord, control register)
 ```
 
-**Processing Timeline:**
+**Fault Tolerance:**
 ```
-Receive CFP ──→ Send PROPOSE ──→ Receive ACCEPT ──→ Write 1 (START)
-                                                          ↓
-                                                    [3 second delay]
-                                                          ↓
-                                                    Write 0 (STOP)
-                                                          ↓
-                                                    Send INFORM
+[Process running...] → [Register 23 polled every 50ms]
+    ↓
+[If breaker == 1] → [Machine failure detected!]
+    ↓
+[Send FAILURE message to Part]
+    ↓
+[Part can re-route or alert system]
 ```
 
 ---
 
 ### 🎯 **PartAgent.java** - Individual Part Entity
-**Responsibility:** Navigate the manufacturing system, manage routing decisions
+**Responsibility:** Navigate the manufacturing system using agent-discovered services
 
 **Key Capabilities:**
 - **Dynamic Route Planning:** Determines route based on product type at initialization
 - **Service Discovery:** Queries DF for available transport and processing services
-- **Contract Net Initiator:** Negotiates with service providers
-- **State Machine Routing:** Advanced FSM-based path execution
-- **Error Recovery:** Gracefully handles service unavailability (retries with delay)
+- **Contract Net Initiator:** Negotiates with service providers (automatically gets location from CONFIG_REQUEST)
+- **State Machine Routing:** FSM-based path execution
+- **Error Recovery:** Handles FAILURE messages and service unavailability
 
 **Route Templates:**
 ```
@@ -388,77 +430,22 @@ Type2 Parts:
   source_station_2 ──→ processing_station_2 ──→ processing_station_1 ──→ sink_station
 ```
 
-**Internal State Variables:**
-- `partType` - Product classification
-- `processPlan` - Queue of remaining destinations
-- `isAtDestination` - Transport/Service toggle
-- `currentLocation` - Current physical position
-
-**RouteExecutionBehaviour FSM:**
-```
-State 0: Query DF for next service provider
-   ↓
-State 1: Send CFP and negotiate with provider
-   ↓
-State 2: [Handled by PartNegotiator]
-   ↓
-State 3: Terminate and restart (or delete if plan empty)
-```
-
-**Key Methods:**
-- `negotiationFinished()` - Called by PartNegotiator upon service completion
-- Alternates between transport and service modes based on `isAtDestination` flag
-
 ---
 
-### 🤝 **PartNegotiator.java** - Protocol Handler
-**Responsibility:** Execute FIPA Contract Net Protocol for PartAgent
+### 🏁 **SinkAgent.java** - System Exit (Configuration Listener)
+**Responsibility:** Accept completed parts and respond to configuration requests
 
 **Key Capabilities:**
-- **Extends ContractNetInitiator:** JADE's standard protocol implementation
-- **Proposal Evaluation:** Selects best proposal (currently first valid)
-- **Completion Handling:** Processes INFORM messages
-- **Error Handling:** Responds to FAILURE messages
-
-**Protocol Flow:**
-1. `handleAllResponses()` - Evaluates proposals from service providers
-2. `handleInform()` - Triggered on service completion
-3. `handleFailure()` - Triggered on service refusal (deletes agent)
-
-**Example Flow:**
-```
-PartNegotiator sends initial CFP
-    ↓
-CraneAgent/ProcessAgent responds with PROPOSE
-    ↓
-PartNegotiator calls handleAllResponses()
-    ↓
-Accepts proposal and sends ACCEPT_PROPOSAL
-    ↓
-Crane/Machine executes and sends INFORM
-    ↓
-PartNegotiator calls handleInform()
-    ↓
-Calls PartAgent.negotiationFinished()
-    ↓
-PartAgent resumes routing
-```
-
----
-
-### 🏁 **SinkAgent.java** - System Exit
-**Responsibility:** Accept completed parts and signal end of manufacturing journey
-
-**Key Capabilities:**
-- **Service Registration:** Registers as `sink_station`
+- **Service Registration:** Registers as `sink_station` (name from factory_layout.json)
+- **CONFIG_REQUEST Listener:** Responds with (X, ControlReg) for Crane coordination
 - **Contract Net Responder:** Negotiates part acceptance
 - **Completion Notification:** Acknowledges part completion
 
-**Workflow:**
-1. Receives CFP from final PartAgent
-2. Sends PROPOSE
-3. Upon ACCEPT_PROPOSAL, returns INFORM
-4. Part agent deletes itself
+**Configuration Pattern:**
+```java
+new Object[]{"sink_station", "945", "0"}
+// Responds with "945,0" when Crane requests config
+```
 
 ---
 
@@ -544,59 +531,66 @@ fetch('http://localhost:8001/spawn', {
 
 ## Configuration
 
-### Runtime Configuration
+### Centralized Configuration: factory_layout.json
 
-#### Modbus TCP Connection
-**File:** `CraneAgent.java` (lines 35-43)
-```java
-InetAddress address = InetAddress.getByName("127.0.0.1");
-modbusConnection = new TCPMasterConnection(address);
-modbusConnection.setPort(502);  // Change port here if needed
-modbusConnection.connect();
+All manufacturing cell hardware parameters are defined in one place:
+
+```json
+{
+  "source_station_1_x": "55",
+  "source_station_1_sensor": "17",
+  "source_station_2_x": "158",
+  "source_station_2_sensor": "18",
+  "processing_station_1_x": "450",
+  "processing_station_1_reg": "4",
+  "processing_station_2_x": "650",
+  "processing_station_2_reg": "5",
+  "sink_station_x": "945",
+  "sink_station_reg": "0"
+}
 ```
 
-**File:** `ProcessAgent.java` (lines 48-52)
-```java
-InetAddress address = InetAddress.getByName("127.0.0.1");
-modbusConnection = new TCPMasterConnection(address);
-modbusConnection.setPort(502);  // Same for all agents
+**Key Parameters:**
+- `{station}_x` - Crane movement X coordinate
+- `{station}_sensor` (sources only) - Modbus register for part presence detection
+- `{station}_reg` (processes/sink) - Modbus register for machine control
+
+**How It Works:**
+1. Main.java reads factory_layout.json at startup
+2. Agents receive their configuration as arguments upon creation
+3. Crane fetches coordinates dynamically via CONFIG_REQUEST protocol
+4. No hardcoding required - change JSON to reconfigure the entire system
+
+### Runtime Configuration Modifications
+
+#### Edit factory_layout.json to Change Hardware Mapping
+```json
+// Change station coordinates (system automatically picks up on restart)
+"source_station_1_x": "55"  →  "source_station_1_x": "60"
 ```
 
 #### JADE Platform Configuration
-**File:** `Main.java` (lines 13-15)
+**File:** `Main.java` (lines 17-19)
 ```java
 Profile profile = new ProfileImpl();
 profile.setParameter(Profile.MAIN_HOST, "localhost");  // Change host if needed
 profile.setParameter(Profile.GUI, "true");              // Set to "false" for headless mode
 ```
 
+#### Modbus TCP Connection
+**Files:** CraneAgent.java, ProcessAgent.java (lines ~44)
+```java
+InetAddress address = InetAddress.getByName("127.0.0.1");
+modbusConnection.setPort(502);  // Change port here if needed
+```
+
 #### Source Agent HTTP Ports
-**File:** `Main.java` (lines 33-36)
+**Automatically managed from Main.java and factory_layout.json**
 ```java
-// Port 8001 for Source1
-AgentController source1 = mainContainer.createNewAgent("Source1", 
-    "agents.SourceAgent", 
-    new Object[]{"source_station_1", "8001"});
-
-// Port 8002 for Source2
-AgentController source2 = mainContainer.createNewAgent("Source2", 
-    "agents.SourceAgent", 
-    new Object[]{"source_station_2", "8002"});
-```
-
-#### Processing Timing
-**File:** `ProcessAgent.java` (line 95)
-```java
-myAgent.addBehaviour(new MachineWorkerBehaviour(myAgent, 3000, inform));
-                                                            ↑
-                                                    Processing duration (ms)
-```
-
-#### Crane Movement Timing
-**File:** `CraneAgent.java` (lines 198-199)
-```java
-int distToPickup = Math.abs(pickupX - actualStartX);
-long sleepToPickup = (distToPickup * 10) + 1500;  // 10ms per unit + overhead
+// HTTP ports are hardcoded in Main.java:
+// Source1: port 8001
+// Source2: port 8002
+// (To change, modify Main.java deployment section)
 ```
 
 ### Build Configuration
