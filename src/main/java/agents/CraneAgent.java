@@ -74,43 +74,15 @@ public class CraneAgent extends Agent {
 
             @Override
             protected ACLMessage handleAcceptProposal(ACLMessage cfp, ACLMessage propose, ACLMessage accept) throws FailureException {
-                // Parse the "PickupLocation,DropoffLocation" string from the Part
                 String[] route = cfp.getContent().split(",");
                 String pickup = route[0];
                 String dropoff = route[1];
 
-                // ---  ERROR HANDLING & SENSOR CHECK ---
-                int sensorReg = -1;
-                if (pickup.equals("source_station_1")) sensorReg = 17;
-                else if (pickup.equals("source_station_2")) sensorReg = 18;
+                System.out.println(getLocalName() + ": Validating route config from " + pickup + " to " + dropoff);
 
-                // If we are picking up from a source, read the physical sensor first!
-                if (sensorReg != -1) {
-                    try {
-                        int isPartPresent = readModbus(sensorReg);
-                        if (isPartPresent == 0) {
-                            System.err.println("\n" + getLocalName() + ": ERROR! No parts generated at " + pickup + "! Aborting movement.");
-                            throw new FailureException("no_part"); // This automatically sends an ACLMessage.FAILURE to the Part
-                        }
-                    } catch (Exception e) {
-                        throw new FailureException("modbus_error");
-                    }
-                }
-
-                System.out.println(getLocalName() + ": Proposal accepted! Executing pick-and-place from " + pickup + " to " + dropoff);
-
-                ACLMessage inform = accept.createReply();
-                inform.setPerformative(ACLMessage.INFORM);
-                inform.setContent("Arrived at " + dropoff);
-
-                // Convert the string destinations to X coordinates
-                int pickupX = getCoordinateForDestination(pickup);
-                int dropoffX = getCoordinateForDestination(dropoff);
-
-                // Run the physical macro
-                myAgent.addBehaviour(new CranePickAndPlaceBehaviour(myAgent, inform, pickupX, dropoffX));
-
-                return null;
+                // Pass the ACCEPT message into the thread so the thread can respond after checking sensors
+                myAgent.addBehaviour(new CranePickAndPlaceBehaviour(myAgent, accept, pickup, dropoff));
+                return null; // Return null so we don't automatically send the INFORM message yet
             }
         });
     }
@@ -171,30 +143,76 @@ public class CraneAgent extends Agent {
     // --- NEW DYNAMIC PHYSICAL MACRO BEHAVIOUR ---
 
     private class CranePickAndPlaceBehaviour extends jade.core.behaviours.OneShotBehaviour {
-        private ACLMessage replyMessage;
-        private int pickupX, dropoffX;
+        private ACLMessage acceptMessage; // Contains the ACCEPT message from the Part
+        private String pickupLocationName, dropoffLocationName;
         private Agent agentRef;
 
-        public CranePickAndPlaceBehaviour(Agent a, ACLMessage reply, int pickupX, int dropoffX) {
+        public CranePickAndPlaceBehaviour(Agent a, ACLMessage acceptMessage, String pickupName, String dropoffName) {
             super(a);
             this.agentRef = a;
-            this.replyMessage = reply;
-            this.pickupX = pickupX;
-            this.dropoffX = dropoffX;
+            this.acceptMessage = acceptMessage;
+            this.pickupLocationName = pickupName;
+            this.dropoffLocationName = dropoffName;
+        }
+
+        // Returns String[] { "X_Coordinate", "Modbus_Register" }
+        private String[] fetchModuleConfig(String serviceType) throws Exception {
+            DFAgentDescription template = new DFAgentDescription();
+            ServiceDescription sd = new ServiceDescription();
+            sd.setType(serviceType);
+            template.addServices(sd);
+            DFAgentDescription[] result = DFService.search(agentRef, template);
+
+            if (result.length == 0) throw new Exception("Module " + serviceType + " not found!");
+
+            ACLMessage req = new ACLMessage(ACLMessage.REQUEST);
+            req.addReceiver(result[0].getName());
+            req.setOntology("CONFIG_REQUEST"); // Updated ontology name
+            req.setReplyWith("req" + System.currentTimeMillis());
+            agentRef.send(req);
+
+            ACLMessage reply = agentRef.blockingReceive(MessageTemplate.MatchInReplyTo(req.getReplyWith()), 5000);
+            if (reply != null && reply.getPerformative() == ACLMessage.INFORM) {
+                return reply.getContent().split(","); // Splits "450,4" into ["450", "4"]
+            }
+            throw new Exception("Failed to retrieve config from " + serviceType);
         }
 
         @Override
         public void action() {
             new Thread(() -> {
                 try {
-                    System.out.println(getLocalName() + ": Raising to safe travel height.");
+                    // 1. DYNAMICALLY FETCH PICKUP CONFIG
+                    String[] pickupConfig = fetchModuleConfig(pickupLocationName);
+                    int pickupX = Integer.parseInt(pickupConfig[0]);
+                    int sensorReg = Integer.parseInt(pickupConfig[1]);
+
+                    // 2. MODBUS SENSOR CHECK (Totally Decoupled!)
+                    if (pickupLocationName.startsWith("source_station")) {
+                        int isPartPresent = readModbus(sensorReg);
+                        if (isPartPresent == 0) {
+                            System.err.println("\n" + getLocalName() + ": ERROR! Sensor at Reg " + sensorReg + " is empty! Aborting.");
+
+                            // Send FAILURE back to the Part
+                            ACLMessage failure = acceptMessage.createReply();
+                            failure.setPerformative(ACLMessage.FAILURE);
+                            failure.setContent("no_part");
+                            agentRef.send(failure);
+                            return; // Kill the thread immediately to stop the crane
+                        }
+                    }
+
+                    // 3. DYNAMICALLY FETCH DROPOFF CONFIG
+                    String[] dropoffConfig = fetchModuleConfig(dropoffLocationName);
+                    int dropoffX = Integer.parseInt(dropoffConfig[0]);
+
+                    // 4. EXECUTE KINEMATICS MACRO
+                    System.out.println(getLocalName() + ": Location data acquired. Raising to safe travel height.");
                     writeModbus(2, 200);
                     Thread.sleep(1500);
 
-                    // --- THE FIX: TRUE CLOSED-LOOP TRACKING ---
-                    // Read the physical location of the crane from Modbus Register 15
+                    // Closed-loop: Read actual physical location
                     int actualStartX = readModbus(15);
-
                     int distToPickup = Math.abs(pickupX - actualStartX);
                     long sleepToPickup = (distToPickup * 10) + 1500;
 
@@ -211,7 +229,6 @@ public class CraneAgent extends Agent {
                     writeModbus(2, 200);
                     Thread.sleep(1500); // Raise
 
-                    // Now calculate dropoff time based on the pickup location
                     int distToDropoff = Math.abs(dropoffX - pickupX);
                     long sleepToDropoff = (distToDropoff * 10) + 1500;
 
@@ -228,7 +245,12 @@ public class CraneAgent extends Agent {
                     writeModbus(2, 200);
                     Thread.sleep(1500);
 
-                    agentRef.send(replyMessage);
+                    // 5. SEND COMPLETION INFORM TO PART (Only after the physical dropoff is 100% finished)
+                    ACLMessage inform = acceptMessage.createReply();
+                    inform.setPerformative(ACLMessage.INFORM);
+                    inform.setContent("Arrived at " + dropoffLocationName);
+                    agentRef.send(inform);
+
                 } catch (Exception e) {
                     System.err.println("Crane macro failed.");
                     e.printStackTrace();
