@@ -62,7 +62,25 @@ public class SourceAgent extends Agent {
             System.err.println(getLocalName() + " failed to start HTTP server.");
             e.printStackTrace();
         }
+        // Update the Network Listener to reply with BOTH the X-Coord and the Register separated by a comma
+        jade.lang.acl.MessageTemplate reqTemplate = jade.lang.acl.MessageTemplate.MatchOntology("CONFIG_REQUEST");
+        addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
+            @Override
+            public void action() {
+                jade.lang.acl.ACLMessage msg = myAgent.receive(reqTemplate);
+                if (msg != null) {
+                    jade.lang.acl.ACLMessage reply = msg.createReply();
+                    reply.setPerformative(jade.lang.acl.ACLMessage.INFORM);
+                    reply.setContent(myLocationX + "," + startRegister); // Send "450,4"
+                    myAgent.send(reply);
+                } else {
+                    block();
+                }
+            }
+        });
     }
+
+
 
     @Override
     protected void takeDown() {
